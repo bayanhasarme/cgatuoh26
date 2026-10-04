@@ -44,15 +44,28 @@ int main() {
     ui_bridge_input(ctx, window);
 
     // 2. Scene Rendering (Background)
-    for (int i = 0; i < WIDTH * HEIGHT; i++) {
-      // Simple gradient background
-      int x = i % WIDTH;
-      int y = i / WIDTH;
-      uint8_t r = (uint8_t)((float)x / WIDTH * 128) + 32;
-      uint8_t g = (uint8_t)((float)y / HEIGHT * 128) + 32;
-      uint8_t b = 64;
-      g_buffer[i] = MFB_RGB(r, g, b);
-    }
+for (int i = 0; i < WIDTH * HEIGHT; i++) {
+  int x = i % WIDTH;
+  int y = i / WIDTH;
+
+  // Center of the screen
+  int cx = x - WIDTH / 2;
+  int cy = y - HEIGHT / 2;
+
+  // Distance-like value from the center.
+  // We use cx*cx + cy*cy to create circular/ring patterns.
+  int dist_pattern = (cx * cx + cy * cy) / 1800;
+
+  // Checkerboard value based on both x and y.
+  int checker = ((x / 60) + (y / 60)) % 2;
+
+  // Creative 2D color pattern: rings + checker influence
+  uint8_t r = (uint8_t)((dist_pattern + x / 5) % 256);
+  uint8_t g = (uint8_t)((dist_pattern + y / 4) % 256);
+  uint8_t b = (uint8_t)(checker ? 220 : (dist_pattern * 3) % 256);
+
+  g_buffer[i] = MFB_RGB(r, g, b);
+}
 
     // 3. UI Logic
     static float slider_val = 50.0f;
