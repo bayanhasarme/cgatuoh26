@@ -13,6 +13,7 @@ extern "C" {
 #define HEIGHT 700
 
 static uint32_t g_buffer[WIDTH * HEIGHT];
+static int g_pattern_mode = 0;
 
 int main() {
   struct mfb_window *window =
@@ -35,6 +36,14 @@ int main() {
   mfb_set_char_input_callback(
       [](struct mfb_window *w, unsigned int c) {
         extern void ui_bridge_char_input(struct mfb_window *, unsigned int);
+
+        // HW1 Part 3: press P to toggle the background pattern
+        if (c == 'p' || c == 'P') {
+          g_pattern_mode = 1 - g_pattern_mode;
+          printf("HW1 Part 3: pattern mode = %d\n", g_pattern_mode);
+          return;
+        }
+
         ui_bridge_char_input(w, c);
       },
       window);
@@ -59,10 +68,22 @@ int main() {
       // Checkerboard value based on both x and y.
       int checker = ((x / 60) + (y / 60)) % 2;
 
-      // Creative 2D color pattern: rings + checker influence
-      uint8_t r = (uint8_t)((dist_pattern + x / 5) % 256);
-      uint8_t g = (uint8_t)((dist_pattern + y / 4) % 256);
-      uint8_t b = (uint8_t)(checker ? 220 : (dist_pattern * 3) % 256);
+      uint8_t r;
+      uint8_t g;
+      uint8_t b;
+
+      if (g_pattern_mode == 0) {
+        // Creative 2D color pattern: rings + checker influence
+        r = (uint8_t)((dist_pattern + x / 5) % 256);
+        g = (uint8_t)((dist_pattern + y / 4) % 256);
+        b = (uint8_t)(checker ? 220 : (dist_pattern * 3) % 256);
+      } else {
+        // HW1 Part 3: alternate keyboard-controlled pattern
+        int diagonal = ((x + y) / 45) % 2;
+        r = (uint8_t)(diagonal ? 230 : (dist_pattern + 40) % 256);
+        g = (uint8_t)((x / 3 + dist_pattern * 2) % 256);
+        b = (uint8_t)(diagonal ? 80 : (255 - ((y / 3 + dist_pattern) % 256)));
+      }
 
       g_buffer[i] = MFB_RGB(r, g, b);
     }
@@ -105,6 +126,17 @@ int main() {
         mu_label(ctx, "Pattern: rings + checkerboard");
       } else {
         mu_label(ctx, "Pattern info hidden");
+      }
+
+      // HW1 Part 3: keyboard shortcut information
+      mu_layout_row(ctx, 1, w1, 0);
+      mu_label(ctx, "Press P to switch pattern");
+
+      mu_layout_row(ctx, 1, w1, 0);
+      if (g_pattern_mode == 0) {
+        mu_label(ctx, "Keyboard mode: rings");
+      } else {
+        mu_label(ctx, "Keyboard mode: alternate");
       }
 
       // checkbox
