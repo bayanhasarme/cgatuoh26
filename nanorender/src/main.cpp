@@ -9,8 +9,8 @@ extern "C" {
 #include "ui_bridge.h"
 #include "ui_renderer.h"
 
-#define WIDTH 1600
-#define HEIGHT 1200
+#define WIDTH 1000
+#define HEIGHT 700
 
 static uint32_t g_buffer[WIDTH * HEIGHT];
 
@@ -44,34 +44,35 @@ int main() {
     ui_bridge_input(ctx, window);
 
     // 2. Scene Rendering (Background)
-for (int i = 0; i < WIDTH * HEIGHT; i++) {
-  int x = i % WIDTH;
-  int y = i / WIDTH;
+    for (int i = 0; i < WIDTH * HEIGHT; i++) {
+      int x = i % WIDTH;
+      int y = i / WIDTH;
 
-  // Center of the screen
-  int cx = x - WIDTH / 2;
-  int cy = y - HEIGHT / 2;
+      // Center of the screen
+      int cx = x - WIDTH / 2;
+      int cy = y - HEIGHT / 2;
 
-  // Distance-like value from the center.
-  // We use cx*cx + cy*cy to create circular/ring patterns.
-  int dist_pattern = (cx * cx + cy * cy) / 1800;
+      // Distance-like value from the center.
+      // We use cx*cx + cy*cy to create circular/ring patterns.
+      int dist_pattern = (cx * cx + cy * cy) / 1800;
 
-  // Checkerboard value based on both x and y.
-  int checker = ((x / 60) + (y / 60)) % 2;
+      // Checkerboard value based on both x and y.
+      int checker = ((x / 60) + (y / 60)) % 2;
 
-  // Creative 2D color pattern: rings + checker influence
-  uint8_t r = (uint8_t)((dist_pattern + x / 5) % 256);
-  uint8_t g = (uint8_t)((dist_pattern + y / 4) % 256);
-  uint8_t b = (uint8_t)(checker ? 220 : (dist_pattern * 3) % 256);
+      // Creative 2D color pattern: rings + checker influence
+      uint8_t r = (uint8_t)((dist_pattern + x / 5) % 256);
+      uint8_t g = (uint8_t)((dist_pattern + y / 4) % 256);
+      uint8_t b = (uint8_t)(checker ? 220 : (dist_pattern * 3) % 256);
 
-  g_buffer[i] = MFB_RGB(r, g, b);
-}
+      g_buffer[i] = MFB_RGB(r, g, b);
+    }
 
     // 3. UI Logic
     static float slider_val = 50.0f;
     static float number_val = 3.14f;
     static int checkbox_a = 0;
     static int checkbox_b = 1;
+    static int show_pattern_info = 1;
     static char textbox_buf[128] = "edit me";
     static bool quit_requested = false;
 
@@ -91,6 +92,19 @@ for (int i = 0; i < WIDTH * HEIGHT; i++) {
       mu_layout_row(ctx, 1, w1, 0);
       if (mu_button(ctx, "mu_button: click me")) {
         quit_requested = false; // just a reaction
+      }
+
+      // HW1 Part 2: custom immediate-mode UI widget
+      mu_layout_row(ctx, 1, w1, 0);
+      if (mu_button(ctx, "Toggle pattern info")) {
+        show_pattern_info = !show_pattern_info;
+      }
+
+      mu_layout_row(ctx, 1, w1, 0);
+      if (show_pattern_info) {
+        mu_label(ctx, "Pattern: rings + checkerboard");
+      } else {
+        mu_label(ctx, "Pattern info hidden");
       }
 
       // checkbox
