@@ -11,6 +11,7 @@ extern "C" {
 
 #define WIDTH 1000
 #define HEIGHT 700
+#define MAX_LINES 512
 
 static uint32_t g_buffer[WIDTH * HEIGHT];
 static int g_pattern_mode = 0;
@@ -20,6 +21,142 @@ static float g_red_strength = 1.0f;
 static float g_green_strength = 1.0f;
 static float g_ring_scale = 1800.0f;
 static int g_boost_blue = 1;
+
+// HW1 Part 6: line drawing state
+struct DrawnLine {
+  int x0;
+  int y0;
+  int x1;
+  int y1;
+  uint32_t color;
+};
+
+static DrawnLine g_lines[MAX_LINES];
+static int g_line_count = 0;
+
+static int g_is_drawing = 0;
+static int g_prev_left_down = 0;
+static int g_line_start_x = 0;
+static int g_line_start_y = 0;
+static int g_line_preview_x = 0;
+static int g_line_preview_y = 0;
+
+static int g_enable_drawing = 1;
+static float g_line_red = 255.0f;
+static float g_line_green = 0.0f;
+static float g_line_blue = 0.0f;
+
+static int clamp_int(int value, int min_value, int max_value) {
+  if (value < min_value)
+    return min_value;
+  if (value > max_value)
+    return max_value;
+  return value;
+}
+
+static uint32_t current_line_color() {
+  int r = clamp_int((int)g_line_red, 0, 255);
+  int g = clamp_int((int)g_line_green, 0, 255);
+  int b = clamp_int((int)g_line_blue, 0, 255);
+  return MFB_RGB((uint8_t)r, (uint8_t)g, (uint8_t)b);
+}
+
+static int point_inside_rect(int x, int y, int rx, int ry, int rw, int rh) {
+  return x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+}
+
+static int point_inside_ui(int x, int y) {
+  if (point_inside_rect(x, y, 20, 20, 360, 540))
+    return 1;
+  if (point_inside_rect(x, y, 395, 20, 380, 200))
+    return 1;
+  if (point_inside_rect(x, y, 395, 235, 380, 80))
+    return 1;
+  if (point_inside_rect(x, y, 395, 330, 380, 220))
+    return 1;
+  return 0;
+}
+
+static void draw_pixel_to_buffer(int x, int y, uint32_t color) {
+  for (int dy = -1; dy <= 1; dy++) {
+    for (int dx = -1; dx <= 1; dx++) {
+      int px = x + dx;
+      int py = y + dy;
+
+      if (px < 0 || px >= WIDTH || py < 0 || py >= HEIGHT)
+        continue;
+
+      g_buffer[py * WIDTH + px] = color;
+    }
+  }
+}
+
+static void draw_line_bresenham(int x0, int y0, int x1, int y1,
+                                uint32_t color) {
+  int dx = abs(x1 - x0);
+  int sx = x0 < x1 ? 1 : -1;
+  int dy = -abs(y1 - y0);
+  int sy = y0 < y1 ? 1 : -1;
+  int err = dx + dy;
+
+  while (true) {
+    draw_pixel_to_buffer(x0, y0, color);
+
+    if (x0 == x1 && y0 == y1)
+      break;
+
+    int e2 = 2 * err;
+
+    if (e2 >= dy) {
+      err += dy;
+      x0 += sx;
+    }
+
+    if (e2 <= dx) {
+      err += dx;
+      y0 += sy;
+    }
+  }
+}
+
+static void handle_line_drawing(mu_Context *ctx) {
+  int mouse_x = ctx->mouse_pos.x;
+  int mouse_y = ctx->mouse_pos.y;
+
+  mouse_x = clamp_int(mouse_x, 0, WIDTH - 1);
+  mouse_y = clamp_int(mouse_y, 0, HEIGHT - 1);
+
+  int left_down = (ctx->mouse_down & MU_MOUSE_LEFT) != 0;
+  int mouse_over_ui = point_inside_ui(mouse_x, mouse_y);
+
+  if (g_enable_drawing && left_down && !g_prev_left_down && !mouse_over_ui) {
+    g_is_drawing = 1;
+    g_line_start_x = mouse_x;
+    g_line_start_y = mouse_y;
+    g_line_preview_x = mouse_x;
+    g_line_preview_y = mouse_y;
+  }
+
+  if (g_is_drawing && left_down) {
+    g_line_preview_x = mouse_x;
+    g_line_preview_y = mouse_y;
+  }
+
+  if (g_is_drawing && !left_down && g_prev_left_down) {
+    if (g_line_count < MAX_LINES) {
+      g_lines[g_line_count].x0 = g_line_start_x;
+      g_lines[g_line_count].y0 = g_line_start_y;
+      g_lines[g_line_count].x1 = g_line_preview_x;
+      g_lines[g_line_count].y1 = g_line_preview_y;
+      g_lines[g_line_count].color = current_line_color();
+      g_line_count++;
+    }
+
+    g_is_drawing = 0;
+  }
+
+  g_prev_left_down = left_down;
+}
 
 int main() {
   struct mfb_window *window =
@@ -57,6 +194,7 @@ int main() {
   while (mfb_update_events(window) != MFB_STATE_EXIT) {
     // 1. Input
     ui_bridge_input(ctx, window);
+    handle_line_drawing(ctx);
 
     // 2. Scene Rendering (Background)
     for (int i = 0; i < WIDTH * HEIGHT; i++) {
@@ -137,6 +275,17 @@ int main() {
       }
 
       g_buffer[i] = MFB_RGB(r, g, b);
+    }
+
+    // HW1 Part 6: draw all saved lines on top of the framebuffer background
+    for (int i = 0; i < g_line_count; i++) {
+      draw_line_bresenham(g_lines[i].x0, g_lines[i].y0, g_lines[i].x1,
+                          g_lines[i].y1, g_lines[i].color);
+    }
+
+    if (g_is_drawing) {
+      draw_line_bresenham(g_line_start_x, g_line_start_y, g_line_preview_x,
+                          g_line_preview_y, current_line_color());
     }
 
     // 3. UI Logic
@@ -295,6 +444,37 @@ int main() {
         }
         mu_end_window(ctx);
       }
+      mu_end_window(ctx);
+    }
+
+    // --- HW1 Part 6: line drawing tools ---
+    if (mu_begin_window(ctx, "Line Drawing", mu_rect(395, 330, 380, 220))) {
+      int w4[] = {-1};
+
+      mu_layout_row(ctx, 1, w4, 0);
+      mu_label(ctx, "Click-drag-release outside UI");
+
+      mu_layout_row(ctx, 1, w4, 0);
+      mu_checkbox(ctx, "Enable drawing", &g_enable_drawing);
+
+      mu_layout_row(ctx, 1, w4, 0);
+      mu_label(ctx, "Line red:");
+      mu_slider(ctx, &g_line_red, 0.0f, 255.0f);
+
+      mu_layout_row(ctx, 1, w4, 0);
+      mu_label(ctx, "Line green:");
+      mu_slider(ctx, &g_line_green, 0.0f, 255.0f);
+
+      mu_layout_row(ctx, 1, w4, 0);
+      mu_label(ctx, "Line blue:");
+      mu_slider(ctx, &g_line_blue, 0.0f, 255.0f);
+
+      mu_layout_row(ctx, 1, w4, 0);
+      if (mu_button(ctx, "Clear lines")) {
+        g_line_count = 0;
+        g_is_drawing = 0;
+      }
+
       mu_end_window(ctx);
     }
 
