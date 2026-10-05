@@ -15,6 +15,12 @@ extern "C" {
 static uint32_t g_buffer[WIDTH * HEIGHT];
 static int g_pattern_mode = 0;
 
+// HW1 Part 5: UI-controlled rendering state
+static float g_red_strength = 1.0f;
+static float g_green_strength = 1.0f;
+static float g_ring_scale = 1800.0f;
+static int g_boost_blue = 1;
+
 int main() {
   struct mfb_window *window =
       mfb_open_ex("MiniGUI Platform", WIDTH, HEIGHT, MFB_WF_RESIZABLE);
@@ -63,7 +69,11 @@ int main() {
 
       // Distance-like value from the center.
       // We use cx*cx + cy*cy to create circular/ring patterns.
-      int dist_pattern = (cx * cx + cy * cy) / 1800;
+      int scale = (int)g_ring_scale;
+      if (scale < 200) {
+        scale = 200;
+      }
+      int dist_pattern = (cx * cx + cy * cy) / scale;
 
       // Checkerboard value based on both x and y.
       int checker = ((x / 60) + (y / 60)) % 2;
@@ -74,15 +84,56 @@ int main() {
 
       if (g_pattern_mode == 0) {
         // Creative 2D color pattern: rings + checker influence
-        r = (uint8_t)((dist_pattern + x / 5) % 256);
-        g = (uint8_t)((dist_pattern + y / 4) % 256);
-        b = (uint8_t)(checker ? 220 : (dist_pattern * 3) % 256);
+        int red_value = (int)(((dist_pattern + x / 5) % 256) * g_red_strength);
+        int green_value =
+            (int)(((dist_pattern + y / 4) % 256) * g_green_strength);
+        int blue_value;
+
+        if (g_boost_blue) {
+          blue_value = checker ? 240 : (dist_pattern * 4) % 256;
+        } else {
+          blue_value = checker ? 90 : (dist_pattern * 2) % 128;
+        }
+
+        if (red_value > 255)
+          red_value = 255;
+        if (green_value > 255)
+          green_value = 255;
+        if (blue_value > 255)
+          blue_value = 255;
+
+        r = (uint8_t)red_value;
+        g = (uint8_t)green_value;
+        b = (uint8_t)blue_value;
       } else {
         // HW1 Part 3: alternate keyboard-controlled pattern
         int diagonal = ((x + y) / 45) % 2;
-        r = (uint8_t)(diagonal ? 230 : (dist_pattern + 40) % 256);
-        g = (uint8_t)((x / 3 + dist_pattern * 2) % 256);
-        b = (uint8_t)(diagonal ? 80 : (255 - ((y / 3 + dist_pattern) % 256)));
+
+        int red_value =
+            (int)((diagonal ? 230 : (dist_pattern + 40) % 256) *
+                  g_red_strength);
+        int green_value =
+            (int)(((x / 3 + dist_pattern * 2) % 256) * g_green_strength);
+        int blue_value;
+
+        if (g_boost_blue) {
+          blue_value = diagonal ? 130 : (255 - ((y / 3 + dist_pattern) % 256));
+        } else {
+          blue_value = diagonal ? 60 : (120 - ((y / 6 + dist_pattern) % 120));
+        }
+
+        if (red_value > 255)
+          red_value = 255;
+        if (green_value > 255)
+          green_value = 255;
+        if (blue_value > 255)
+          blue_value = 255;
+        if (blue_value < 0)
+          blue_value = 0;
+
+        r = (uint8_t)red_value;
+        g = (uint8_t)green_value;
+        b = (uint8_t)blue_value;
       }
 
       g_buffer[i] = MFB_RGB(r, g, b);
@@ -138,6 +189,25 @@ int main() {
       } else {
         mu_label(ctx, "Keyboard mode: alternate");
       }
+
+      // HW1 Part 5: sliders and checkbox connected to the framebuffer pattern
+      mu_layout_row(ctx, 1, w1, 0);
+      mu_label(ctx, "HW1 Part 5: pattern controls");
+
+      mu_layout_row(ctx, 1, w1, 0);
+      mu_label(ctx, "Red strength:");
+      mu_slider(ctx, &g_red_strength, 0.2f, 2.0f);
+
+      mu_layout_row(ctx, 1, w1, 0);
+      mu_label(ctx, "Green strength:");
+      mu_slider(ctx, &g_green_strength, 0.2f, 2.0f);
+
+      mu_layout_row(ctx, 1, w1, 0);
+      mu_label(ctx, "Ring scale:");
+      mu_slider(ctx, &g_ring_scale, 400.0f, 4000.0f);
+
+      mu_layout_row(ctx, 1, w1, 0);
+      mu_checkbox(ctx, "Boost blue channel", &g_boost_blue);
 
       // checkbox
       mu_layout_row(ctx, 1, w1, 0);
