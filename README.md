@@ -1,8 +1,8 @@
 # Computer Graphics 2026 - Course Portfolio
 
 **Student Information**
-* **Name:** [Your Name Here]
-* **Student ID:** [Your ID Here]
+* **Name:** [Bayan Hasarme]
+* **Student ID:** [209432061]
 
 ## Academic Integrity & Workflow Agreement
 
