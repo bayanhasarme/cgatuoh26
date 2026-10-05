@@ -109,19 +109,55 @@ UIRenderer::UIRenderer(int width, int height) : m_width(width), m_height(height)
 
 void UIRenderer::render(mu_Context* ctx, uint32_t* buffer) {
     m_buffer = buffer;
+
+    // HW1 Part 4:
+    // Shift only the rendered UI commands.
+    // MicroUI still computes input and hitboxes in the original positions.
+    const int ui_offset_x = 120;
+    const int ui_offset_y = 80;
+
     mu_Command* cmd = NULL;
+
     while (mu_next_command(ctx, &cmd)) {
         switch (cmd->type) {
-            case MU_COMMAND_RECT: draw_rect(cmd->rect.rect, cmd->rect.color); break;
-            case MU_COMMAND_TEXT: draw_text(cmd->text.str, cmd->text.pos, cmd->text.color); break;
-            case MU_COMMAND_ICON: draw_icon(cmd->icon.id, cmd->icon.rect, cmd->icon.color); break;
-            case MU_COMMAND_CLIP: set_clip_rect(cmd->clip.rect); break;
+            case MU_COMMAND_RECT: {
+                mu_Rect rect = cmd->rect.rect;
+                rect.x += ui_offset_x;
+                rect.y += ui_offset_y;
+                draw_rect(rect, cmd->rect.color);
+                break;
+            }
+
+            case MU_COMMAND_TEXT: {
+                mu_Vec2 pos = cmd->text.pos;
+                pos.x += ui_offset_x;
+                pos.y += ui_offset_y;
+                draw_text(cmd->text.str, pos, cmd->text.color);
+                break;
+            }
+
+            case MU_COMMAND_ICON: {
+                mu_Rect rect = cmd->icon.rect;
+                rect.x += ui_offset_x;
+                rect.y += ui_offset_y;
+                draw_icon(cmd->icon.id, rect, cmd->icon.color);
+                break;
+            }
+
+            case MU_COMMAND_CLIP: {
+                mu_Rect rect = cmd->clip.rect;
+                rect.x += ui_offset_x;
+                rect.y += ui_offset_y;
+                set_clip_rect(rect);
+                break;
+            }
         }
     }
 }
 
 void UIRenderer::draw_rect(mu_Rect rect, mu_Color color) {
     uint32_t c = to_uint32(color);
+
     int x1 = std::max({rect.x, m_clip_rect.x, 0});
     int y1 = std::max({rect.y, m_clip_rect.y, 0});
     int x2 = std::min({rect.x + rect.w, m_clip_rect.x + m_clip_rect.w, m_width});
@@ -138,14 +174,18 @@ void UIRenderer::draw_text(const char* text, mu_Vec2 pos, mu_Color color) {
     uint32_t c = to_uint32(color);
     int x = pos.x;
     int y = pos.y;
+
     for (const char* p = text; *p; p++) {
         if (*p < 32 || *p > 126) continue;
+
         const uint8_t* glyph = font_8x8[*p - 32];
+
         for (int row = 0; row < 8; row++) {
             for (int col = 0; col < 8; col++) {
                 if (glyph[row] & (0x80 >> col)) {
                     int px = x + col;
                     int py = y + row;
+
                     if (px >= m_clip_rect.x && px < m_clip_rect.x + m_clip_rect.w &&
                         py >= m_clip_rect.y && py < m_clip_rect.y + m_clip_rect.h &&
                         px >= 0 && px < m_width && py >= 0 && py < m_height) {
@@ -154,6 +194,7 @@ void UIRenderer::draw_text(const char* text, mu_Vec2 pos, mu_Color color) {
                 }
             }
         }
+
         x += 8;
     }
 }
@@ -162,6 +203,7 @@ void UIRenderer::draw_pixel(int x, int y, uint32_t c) {
     if (x < m_clip_rect.x || x >= m_clip_rect.x + m_clip_rect.w) return;
     if (y < m_clip_rect.y || y >= m_clip_rect.y + m_clip_rect.h) return;
     if (x < 0 || x >= m_width || y < 0 || y >= m_height) return;
+
     m_buffer[y * m_width + x] = c;
 }
 
@@ -170,10 +212,14 @@ void UIRenderer::draw_line(int x0, int y0, int x1, int y1, uint32_t c) {
     int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
     int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
     int err = dx + dy;
+
     while (true) {
         draw_pixel(x0, y0, c);
+
         if (x0 == x1 && y0 == y1) break;
+
         int e2 = 2 * err;
+
         if (e2 >= dy) { err += dy; x0 += sx; }
         if (e2 <= dx) { err += dx; y0 += sy; }
     }
@@ -181,6 +227,7 @@ void UIRenderer::draw_line(int x0, int y0, int x1, int y1, uint32_t c) {
 
 void UIRenderer::draw_icon(int id, mu_Rect rect, mu_Color color) {
     uint32_t c = to_uint32(color);
+
     // Centre a square drawing area within the rect (max 14x14)
     int sz = std::min({rect.w, rect.h, 14});
     int cx = rect.x + rect.w / 2;
@@ -196,6 +243,7 @@ void UIRenderer::draw_icon(int id, mu_Rect rect, mu_Color color) {
             }
             break;
         }
+
         case MU_ICON_CHECK: {
             // Checkmark: short upstroke then long upstroke
             int lx = cx - h + 1;
@@ -206,6 +254,7 @@ void UIRenderer::draw_icon(int id, mu_Rect rect, mu_Color color) {
             }
             break;
         }
+
         case MU_ICON_COLLAPSED: {
             // Right-pointing filled triangle: base on left, tip on right
             for (int dx = -h; dx <= h; dx++) {
@@ -214,6 +263,7 @@ void UIRenderer::draw_icon(int id, mu_Rect rect, mu_Color color) {
             }
             break;
         }
+
         case MU_ICON_EXPANDED: {
             // Down-pointing filled triangle: base on top, tip on bottom
             for (int dy = -h; dy <= h; dy++) {
@@ -222,6 +272,7 @@ void UIRenderer::draw_icon(int id, mu_Rect rect, mu_Color color) {
             }
             break;
         }
+
         default:
             draw_rect(rect, color);
             break;
