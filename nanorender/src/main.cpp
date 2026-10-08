@@ -34,15 +34,13 @@ static int g_show_hw1_tools = 0;
 static int g_show_pattern_background = 0;
 static int g_show_wireframe = 1;
 static int g_show_transforms = 1;
+static int g_enable_arrow_controls = 1;
 
-// HW2 display area above the transformation controls.
 static constexpr int VIEW_X = 20;
 static constexpr int VIEW_Y = 20;
 static constexpr int VIEW_WIDTH = 755;
 static constexpr int VIEW_HEIGHT = 385;
 
-// Clip only mesh pixels to the display area.
-// The HW1 line drawing tool still uses the entire framebuffer.
 static bool g_clip_mesh_pixels = false;
 
 struct TransformState {
@@ -54,22 +52,73 @@ struct TransformState {
 static TransformState g_local_transform;
 static TransformState g_world_transform;
 
-// HW2 Part 5: GLM uses column vectors.
-// R = Rz * Ry * Rx, so X rotation is applied first.
+// HW2 Part 6: intercept arrow input before ui_bridge_input.
+// Each new press changes World Translation by 0.1 model units.
+// Holding a key does not repeatedly move the model.
+static void handle_transform_keyboard(mu_Context *ctx,
+                                      struct mfb_window *window) {
+  static std::array<uint8_t, 4> previous{};
+  const std::array<int, 4> arrow_keys = {
+      MFB_KB_KEY_LEFT, MFB_KB_KEY_RIGHT,
+      MFB_KB_KEY_UP, MFB_KB_KEY_DOWN};
+
+  const uint8_t *keys = mfb_get_key_buffer(window);
+  if (!keys)
+    return;
+
+  std::array<bool, 4> pressed{};
+  for (size_t i = 0; i < arrow_keys.size(); ++i) {
+    const uint8_t current = keys[arrow_keys[i]];
+    pressed[i] = current && !previous[i];
+    previous[i] = current;
+  }
+
+  // Always update previous states, even while controls are disabled.
+  // Avoid scene movement while editing a GUI control or using HW1 tools.
+  const bool modifier_down =
+      keys[MFB_KB_KEY_LEFT_SHIFT] ||
+      keys[MFB_KB_KEY_RIGHT_SHIFT] ||
+      keys[MFB_KB_KEY_LEFT_CONTROL] ||
+      keys[MFB_KB_KEY_RIGHT_CONTROL] ||
+      keys[MFB_KB_KEY_LEFT_ALT] ||
+      keys[MFB_KB_KEY_RIGHT_ALT];
+
+  if (!g_enable_arrow_controls || g_show_hw1_tools ||
+      ctx->focus != 0 || modifier_down)
+    return;
+
+  constexpr float step = 0.1f;
+  const float dx = step * (int(pressed[1]) - int(pressed[0]));
+  const float dy = step * (int(pressed[3]) - int(pressed[2]));
+
+  if (dx == 0.0f && dy == 0.0f)
+    return;
+
+  // Match the slider range so keyboard and GUI share the same state.
+  g_world_transform.translation.x = glm::clamp(
+      g_world_transform.translation.x + dx, -2.0f, 2.0f);
+  g_world_transform.translation.y = glm::clamp(
+      g_world_transform.translation.y + dy, -2.0f, 2.0f);
+
+  printf("HW2 Part 6: World Translation = (%.2f, %.2f, %.2f)\n",
+         g_world_transform.translation.x,
+         g_world_transform.translation.y,
+         g_world_transform.translation.z);
+  fflush(stdout);
+}
+
+// Column vectors: X rotation is applied first.
 static glm::mat4 rotation_matrix(const glm::vec3 &degrees) {
   const glm::mat4 identity(1.0f);
-
   const glm::mat4 rx = glm::rotate(
       identity, glm::radians(degrees.x), glm::vec3(1, 0, 0));
   const glm::mat4 ry = glm::rotate(
       identity, glm::radians(degrees.y), glm::vec3(0, 1, 0));
   const glm::mat4 rz = glm::rotate(
       identity, glm::radians(degrees.z), glm::vec3(0, 0, 1));
-
   return rz * ry * rx;
 }
 
-// T * R * S applies scale, then rotation, then translation.
 static glm::mat4 transformation_matrix(const TransformState &state) {
   const glm::mat4 identity(1.0f);
   const glm::mat4 t = glm::translate(identity, state.translation);
@@ -78,12 +127,9 @@ static glm::mat4 transformation_matrix(const TransformState &state) {
   return t * r * s;
 }
 
-// Both demonstrations use the same translation, angle and object size.
-// Only the frame containing each operation changes.
 static void set_comparison_demo(bool orbit) {
   g_local_transform = TransformState{};
   g_world_transform = TransformState{};
-
   g_local_transform.scale = glm::vec3(0.5f);
 
   if (orbit) {
@@ -112,7 +158,6 @@ static const char *g_mesh_path = "models/hw2_test.obj";
 static bool g_mesh_loaded = false;
 static std::string g_mesh_error;
 
-// Part 2 data is retained for inspection and normalization.
 struct ViewportFit {
   glm::vec3 minimum{0.0f};
   glm::vec3 maximum{0.0f};
@@ -158,9 +203,6 @@ static void calculate_viewport_fit(const Mesh &mesh) {
   }
 }
 
-// Positive OBJ indices start at 1.
-// Negative indices count backwards.
-// Slash-separated tokens use their first field.
 static bool parse_obj_index(const std::string &token, size_t vertex_count,
                             size_t &index) {
   const std::string number = token.substr(0, token.find('/'));
@@ -294,13 +336,11 @@ static void reload_mesh() {
   fflush(stdout);
 }
 
-// HW1 pattern controls.
 static float g_red_strength = 1.0f;
 static float g_green_strength = 1.0f;
 static float g_ring_scale = 1800.0f;
 static int g_boost_blue = 1;
 
-// HW1 line drawing.
 struct DrawnLine {
   int x0;
   int y0;
@@ -368,7 +408,6 @@ static int point_inside_ui(int x, int y) {
   return 0;
 }
 
-// The same Bresenham algorithm used in HW1.
 static void draw_pixel_to_buffer(int x, int y, uint32_t color) {
   for (int dy = -1; dy <= 1; dy++) {
     for (int dx = -1; dx <= 1; dx++) {
@@ -412,16 +451,12 @@ static void draw_line_bresenham(int x0, int y0, int x1, int y1,
   }
 }
 
-// Orthographic projection drops Z.
 static glm::ivec2 project_orthographic(const glm::vec3 &vertex) {
   return glm::ivec2(
       static_cast<int>(std::lround(vertex.x)),
       static_cast<int>(std::lround(vertex.y)));
 }
 
-// HW2 Part 5: always transform the original vertices.
-// Centering happens before Local and World operations.
-// The fixed viewport scale is never recalculated from transformed bounds.
 static void draw_mesh_wireframe() {
   if (!g_mesh_loaded || !g_show_wireframe)
     return;
@@ -434,8 +469,6 @@ static void draw_mesh_wireframe() {
       VIEW_X + VIEW_WIDTH * 0.5f,
       VIEW_Y + VIEW_HEIGHT * 0.5f,
       0.0f);
-
-  // Leave room for rotation and moderate translation.
   const float display_scale = g_fit.scale * 0.5f;
 
   std::vector<glm::ivec2> projected;
@@ -451,7 +484,6 @@ static void draw_mesh_wireframe() {
 
   g_clip_mesh_pixels = true;
 
-  // Mark the fixed world origin to make orbit versus spin easy to see.
   const int origin_x = static_cast<int>(std::lround(screen_center.x));
   const int origin_y = static_cast<int>(std::lround(screen_center.y));
   const uint32_t origin_color = MFB_RGB(255, 190, 60);
@@ -553,7 +585,6 @@ static void transformation_window(mu_Context *ctx, const char *title,
 
     mu_layout_row(ctx, 1, full_width, 0);
     mu_label(ctx, title);
-
     mu_layout_row(ctx, 3, axis_widths, 0);
     mu_label(ctx, "X");
     mu_label(ctx, "Y");
@@ -625,6 +656,8 @@ int main() {
       window);
 
   while (mfb_update_events(window) != MFB_STATE_EXIT) {
+    // Handle scene keyboard input before passing input to MicroUI.
+    handle_transform_keyboard(ctx, window);
     ui_bridge_input(ctx, window);
     handle_line_drawing(ctx);
 
@@ -868,9 +901,11 @@ int main() {
       mu_checkbox(ctx, "Show HW1 tools", &g_show_hw1_tools);
       mu_layout_row(ctx, 1, widths, 0);
       mu_checkbox(ctx, "Show transforms", &g_show_transforms);
+      mu_layout_row(ctx, 1, widths, 0);
+      mu_checkbox(ctx, "Arrow controls", &g_enable_arrow_controls);
 
       mu_layout_row(ctx, 1, widths, 0);
-      mu_text(ctx, "Orange +: world origin. Projection drops Z.");
+      mu_text(ctx, "Arrows: world XY (0.1). Orange +: origin.");
 
       mu_layout_row(ctx, 1, widths, 0);
       if (mu_button(ctx, "Quit"))
@@ -915,7 +950,6 @@ int main() {
     if (quit_requested)
       break;
 
-    // Draw after processing widgets so changes appear in this frame.
     draw_mesh_wireframe();
     renderer.render(ctx, g_buffer);
 
