@@ -35,17 +35,68 @@ static int g_show_pattern_background = 0;
 static int g_show_wireframe = 1;
 static int g_show_transforms = 1;
 
-// HW2 Part 4: independent Local and World transformation values.
-// Rotation values are stored in degrees.
-// These values will be applied to the mesh in Part 5.
+// HW2 display area above the transformation controls.
+static constexpr int VIEW_X = 20;
+static constexpr int VIEW_Y = 20;
+static constexpr int VIEW_WIDTH = 755;
+static constexpr int VIEW_HEIGHT = 385;
+
+// Clip only mesh pixels to the display area.
+// The HW1 line drawing tool still uses the entire framebuffer.
+static bool g_clip_mesh_pixels = false;
+
 struct TransformState {
   glm::vec3 translation{0.0f};
-  glm::vec3 rotation{0.0f};
+  glm::vec3 rotation{0.0f}; // Degrees.
   glm::vec3 scale{1.0f};
 };
 
 static TransformState g_local_transform;
 static TransformState g_world_transform;
+
+// HW2 Part 5: GLM uses column vectors.
+// R = Rz * Ry * Rx, so X rotation is applied first.
+static glm::mat4 rotation_matrix(const glm::vec3 &degrees) {
+  const glm::mat4 identity(1.0f);
+
+  const glm::mat4 rx = glm::rotate(
+      identity, glm::radians(degrees.x), glm::vec3(1, 0, 0));
+  const glm::mat4 ry = glm::rotate(
+      identity, glm::radians(degrees.y), glm::vec3(0, 1, 0));
+  const glm::mat4 rz = glm::rotate(
+      identity, glm::radians(degrees.z), glm::vec3(0, 0, 1));
+
+  return rz * ry * rx;
+}
+
+// T * R * S applies scale, then rotation, then translation.
+static glm::mat4 transformation_matrix(const TransformState &state) {
+  const glm::mat4 identity(1.0f);
+  const glm::mat4 t = glm::translate(identity, state.translation);
+  const glm::mat4 r = rotation_matrix(state.rotation);
+  const glm::mat4 s = glm::scale(identity, state.scale);
+  return t * r * s;
+}
+
+// Both demonstrations use the same translation, angle and object size.
+// Only the frame containing each operation changes.
+static void set_comparison_demo(bool orbit) {
+  g_local_transform = TransformState{};
+  g_world_transform = TransformState{};
+
+  g_local_transform.scale = glm::vec3(0.5f);
+
+  if (orbit) {
+    g_local_transform.translation.x = 0.8f;
+    g_world_transform.rotation.z = 45.0f;
+  } else {
+    g_world_transform.translation.x = 0.8f;
+    g_local_transform.rotation.z = 45.0f;
+  }
+
+  g_show_wireframe = 1;
+  g_show_pattern_background = 0;
+}
 
 struct Face {
   std::array<size_t, 3> indices;
@@ -61,7 +112,7 @@ static const char *g_mesh_path = "models/hw2_test.obj";
 static bool g_mesh_loaded = false;
 static std::string g_mesh_error;
 
-// Preserve the original vertices and store the fitted vertices separately.
+// Part 2 data is retained for inspection and normalization.
 struct ViewportFit {
   glm::vec3 minimum{0.0f};
   glm::vec3 maximum{0.0f};
@@ -108,8 +159,8 @@ static void calculate_viewport_fit(const Mesh &mesh) {
 }
 
 // Positive OBJ indices start at 1.
-// Negative indices count backwards from the vertices read so far.
-// For slash-separated tokens, only the vertex index is used.
+// Negative indices count backwards.
+// Slash-separated tokens use their first field.
 static bool parse_obj_index(const std::string &token, size_t vertex_count,
                             size_t &index) {
   const std::string number = token.substr(0, token.find('/'));
@@ -317,7 +368,7 @@ static int point_inside_ui(int x, int y) {
   return 0;
 }
 
-// The same Bresenham implementation used in HW1.
+// The same Bresenham algorithm used in HW1.
 static void draw_pixel_to_buffer(int x, int y, uint32_t color) {
   for (int dy = -1; dy <= 1; dy++) {
     for (int dx = -1; dx <= 1; dx++) {
@@ -325,6 +376,12 @@ static void draw_pixel_to_buffer(int x, int y, uint32_t color) {
       int py = y + dy;
       if (px < 0 || px >= WIDTH || py < 0 || py >= HEIGHT)
         continue;
+
+      if (g_clip_mesh_pixels &&
+          !point_inside_rect(px, py, VIEW_X, VIEW_Y,
+                             VIEW_WIDTH, VIEW_HEIGHT))
+        continue;
+
       g_buffer[py * WIDTH + px] = color;
     }
   }
@@ -362,23 +419,59 @@ static glm::ivec2 project_orthographic(const glm::vec3 &vertex) {
       static_cast<int>(std::lround(vertex.y)));
 }
 
+// HW2 Part 5: always transform the original vertices.
+// Centering happens before Local and World operations.
+// The fixed viewport scale is never recalculated from transformed bounds.
 static void draw_mesh_wireframe() {
   if (!g_mesh_loaded || !g_show_wireframe)
     return;
 
+  const glm::mat4 local = transformation_matrix(g_local_transform);
+  const glm::mat4 world = transformation_matrix(g_world_transform);
+  const glm::mat4 model = world * local;
+
+  const glm::vec3 screen_center(
+      VIEW_X + VIEW_WIDTH * 0.5f,
+      VIEW_Y + VIEW_HEIGHT * 0.5f,
+      0.0f);
+
+  // Leave room for rotation and moderate translation.
+  const float display_scale = g_fit.scale * 0.5f;
+
+  std::vector<glm::ivec2> projected;
+  projected.reserve(g_mesh.vertices.size());
+
+  for (const glm::vec3 &original : g_mesh.vertices) {
+    const glm::vec4 centered(original - g_fit.center, 1.0f);
+    const glm::vec3 transformed = glm::vec3(model * centered);
+    const glm::vec3 screen_vertex =
+        screen_center + display_scale * transformed;
+    projected.push_back(project_orthographic(screen_vertex));
+  }
+
+  g_clip_mesh_pixels = true;
+
+  // Mark the fixed world origin to make orbit versus spin easy to see.
+  const int origin_x = static_cast<int>(std::lround(screen_center.x));
+  const int origin_y = static_cast<int>(std::lround(screen_center.y));
+  const uint32_t origin_color = MFB_RGB(255, 190, 60);
+  draw_line_bresenham(origin_x - 7, origin_y,
+                      origin_x + 7, origin_y, origin_color);
+  draw_line_bresenham(origin_x, origin_y - 7,
+                      origin_x, origin_y + 7, origin_color);
+
   const uint32_t color = MFB_RGB(255, 255, 255);
   for (const Face &face : g_mesh.faces) {
-    const glm::ivec2 a =
-        project_orthographic(g_fit.fitted_vertices[face.indices[0]]);
-    const glm::ivec2 b =
-        project_orthographic(g_fit.fitted_vertices[face.indices[1]]);
-    const glm::ivec2 c =
-        project_orthographic(g_fit.fitted_vertices[face.indices[2]]);
+    const glm::ivec2 &a = projected[face.indices[0]];
+    const glm::ivec2 &b = projected[face.indices[1]];
+    const glm::ivec2 &c = projected[face.indices[2]];
 
     draw_line_bresenham(a.x, a.y, b.x, b.y, color);
     draw_line_bresenham(b.x, b.y, c.x, c.y, color);
     draw_line_bresenham(c.x, c.y, a.x, a.y, color);
   }
+
+  g_clip_mesh_pixels = false;
 }
 
 static void handle_line_drawing(mu_Context *ctx) {
@@ -435,7 +528,6 @@ static void fit_vector_label(mu_Context *ctx, const char *name,
   mu_text(ctx, text);
 }
 
-// HW2 Part 4: one row of three sliders, in X/Y/Z order.
 static void transform_vector_controls(mu_Context *ctx, const char *label,
                                       glm::vec3 &value,
                                       float minimum, float maximum) {
@@ -444,7 +536,6 @@ static void transform_vector_controls(mu_Context *ctx, const char *label,
 
   mu_layout_row(ctx, 1, full_width, 0);
   mu_label(ctx, label);
-
   mu_layout_row(ctx, 3, axis_widths, 0);
   mu_slider(ctx, &value.x, minimum, maximum);
   mu_slider(ctx, &value.y, minimum, maximum);
@@ -452,8 +543,8 @@ static void transform_vector_controls(mu_Context *ctx, const char *label,
 }
 
 static void transformation_window(mu_Context *ctx, const char *title,
-                                  mu_Rect rect, TransformState &state) {
-  // Fixed positions keep these two control windows side by side.
+                                  mu_Rect rect, TransformState &state,
+                                  bool is_local) {
   int options = MU_OPT_NORESIZE | MU_OPT_NOCLOSE | MU_OPT_NOTITLE;
 
   if (mu_begin_window_ex(ctx, title, rect, options)) {
@@ -480,7 +571,8 @@ static void transformation_window(mu_Context *ctx, const char *title,
       state = TransformState{};
 
     mu_layout_row(ctx, 1, full_width, 0);
-    mu_label(ctx, "Part 4: values only");
+    if (mu_button(ctx, is_local ? "Demo: orbit" : "Demo: spin"))
+      set_comparison_demo(is_local);
 
     mu_end_window(ctx);
   }
@@ -507,6 +599,10 @@ int main() {
     return 1;
 
   mu_Context *ctx = (mu_Context *)malloc(sizeof(mu_Context));
+  if (!ctx) {
+    mfb_close(window);
+    return 1;
+  }
   mu_init(ctx);
 
   ctx->text_width = [](mu_Font font, const char *str, int len) {
@@ -581,8 +677,6 @@ int main() {
           (uint8_t)clamp_int(green_value, 0, 255),
           (uint8_t)clamp_int(blue_value, 0, 255));
     }
-
-    draw_mesh_wireframe();
 
     if (g_show_hw1_tools) {
       for (int i = 0; i < g_line_count; i++) {
@@ -776,7 +870,7 @@ int main() {
       mu_checkbox(ctx, "Show transforms", &g_show_transforms);
 
       mu_layout_row(ctx, 1, widths, 0);
-      mu_text(ctx, "Orthographic: use X,Y and drop Z.");
+      mu_text(ctx, "Orange +: world origin. Projection drops Z.");
 
       mu_layout_row(ctx, 1, widths, 0);
       if (mu_button(ctx, "Quit"))
@@ -794,12 +888,12 @@ int main() {
         fit_vector_label(ctx, "Model center:", g_fit.center);
 
         char text[64];
-        snprintf(text, sizeof(text), "Scale: %.2f", g_fit.scale);
+        snprintf(text, sizeof(text), "Part 2 scale: %.2f", g_fit.scale);
         mu_layout_row(ctx, 1, widths, 0);
         mu_label(ctx, text);
-        fit_vector_label(ctx, "Translation XYZ:", g_fit.translation);
+        fit_vector_label(ctx, "Part 2 translation:", g_fit.translation);
         mu_layout_row(ctx, 1, widths, 0);
-        mu_text(ctx, "Fit uses 80% of the smaller window dimension.");
+        mu_text(ctx, "Display uses half the Part 2 scale above the controls.");
       } else {
         mu_layout_row(ctx, 1, widths, 0);
         mu_label(ctx, "No mesh loaded.");
@@ -807,14 +901,13 @@ int main() {
       mu_end_window(ctx);
     }
 
-    // Hide transformation controls when displaying the original HW1 tools.
     if (g_show_transforms && !g_show_hw1_tools) {
       transformation_window(ctx, "Local Transformations",
                             mu_rect(20, 420, 370, 260),
-                            g_local_transform);
+                            g_local_transform, true);
       transformation_window(ctx, "World Transformations",
                             mu_rect(405, 420, 370, 260),
-                            g_world_transform);
+                            g_world_transform, false);
     }
 
     mu_end(ctx);
@@ -822,6 +915,8 @@ int main() {
     if (quit_requested)
       break;
 
+    // Draw after processing widgets so changes appear in this frame.
+    draw_mesh_wireframe();
     renderer.render(ctx, g_buffer);
 
     mfb_update_state state = mfb_update_ex(window, g_buffer, WIDTH, HEIGHT);
