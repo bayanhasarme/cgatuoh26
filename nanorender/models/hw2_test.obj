@@ -1,0 +1,15 @@
+# HW2 test model: pyramid
+# 5 vertices, 6 triangular faces
+
+v -1 -1 0
+v 1 -1 0
+v 1 1 0
+v -1 1 0
+v 0 0 2
+
+f 1 3 2
+f 1 4 3
+f 1 2 5
+f 2 3 5
+f 3 4 5
+f 4 1 5

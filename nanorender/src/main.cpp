@@ -1,8 +1,16 @@
 #include "MiniFB.h"
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <array>
+#include <cmath>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -10,6 +18,7 @@
 extern "C" {
 #include "microui.h"
 }
+
 #include "ui_bridge.h"
 #include "ui_renderer.h"
 
@@ -20,13 +29,154 @@ extern "C" {
 static uint32_t g_buffer[WIDTH * HEIGHT];
 static int g_pattern_mode = 0;
 
-// HW1 Part 5: UI-controlled rendering state
+// HW2 Part 1: mesh data and OBJ loading.
+struct Face {
+  std::array<size_t, 3> indices;
+};
+
+struct Mesh {
+  std::vector<glm::vec3> vertices;
+  std::vector<Face> faces;
+};
+
+static Mesh g_mesh;
+static const char *g_mesh_path = "models/hw2_test.obj";
+static bool g_mesh_loaded = false;
+static std::string g_mesh_error;
+
+// OBJ indices start at 1.
+// Negative indices count backwards from the vertices read so far.
+// Tokens such as "1/2/3" and "1//3" use the first number as the vertex index.
+static bool parse_obj_index(const std::string &token, size_t vertex_count,
+                            size_t &index) {
+  const std::string number = token.substr(0, token.find('/'));
+
+  try {
+    size_t consumed = 0;
+    const long long value = std::stoll(number, &consumed);
+
+    if (consumed != number.size() || value == 0)
+      return false;
+
+    if (value > 0) {
+      if (static_cast<unsigned long long>(value) > vertex_count)
+        return false;
+      index = static_cast<size_t>(value - 1);
+    } else {
+      const long long resolved =
+          static_cast<long long>(vertex_count) + value;
+      if (resolved < 0 ||
+          static_cast<unsigned long long>(resolved) >= vertex_count)
+        return false;
+      index = static_cast<size_t>(resolved);
+    }
+
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+static bool load_obj(const char *path, Mesh &mesh, std::string &error) {
+  mesh = Mesh{};
+  error.clear();
+
+  std::ifstream file(path);
+  if (!file) {
+    error = std::string("Cannot open: ") + path +
+            ". Run from the nanorender folder.";
+    return false;
+  }
+
+  Mesh loaded;
+  std::string line;
+  size_t line_number = 0;
+
+  while (std::getline(file, line)) {
+    ++line_number;
+
+    // Remove comments, including comments at the end of a data line.
+    const size_t comment = line.find('#');
+    if (comment != std::string::npos)
+      line.erase(comment);
+
+    std::istringstream stream(line);
+    std::string type;
+    if (!(stream >> type))
+      continue;
+
+    if (type == "v") {
+      glm::vec3 vertex;
+      if (!(stream >> vertex.x >> vertex.y >> vertex.z) ||
+          !std::isfinite(vertex.x) || !std::isfinite(vertex.y) ||
+          !std::isfinite(vertex.z)) {
+        error = "Invalid vertex at line " + std::to_string(line_number);
+        return false;
+      }
+
+      loaded.vertices.push_back(vertex);
+    } else if (type == "f") {
+      std::array<std::string, 3> tokens;
+      std::string extra;
+
+      if (!(stream >> tokens[0] >> tokens[1] >> tokens[2]) ||
+          (stream >> extra)) {
+        error = "Expected a triangular face at line " +
+                std::to_string(line_number);
+        return false;
+      }
+
+      Face face{};
+      for (size_t i = 0; i < 3; ++i) {
+        if (!parse_obj_index(tokens[i], loaded.vertices.size(),
+                             face.indices[i])) {
+          error = "Invalid vertex index at line " +
+                  std::to_string(line_number);
+          return false;
+        }
+      }
+
+      loaded.faces.push_back(face);
+    }
+
+    // Other OBJ records, such as vt, vn and material names, are ignored.
+  }
+
+  if (file.bad()) {
+    error = "Error while reading the OBJ file.";
+    return false;
+  }
+
+  if (loaded.vertices.empty() || loaded.faces.empty()) {
+    error = "The OBJ must contain vertices and triangular faces.";
+    return false;
+  }
+
+  mesh = std::move(loaded);
+  return true;
+}
+
+static void reload_mesh() {
+  g_mesh_loaded = load_obj(g_mesh_path, g_mesh, g_mesh_error);
+
+  if (g_mesh_loaded) {
+    printf("HW2 Part 1: loaded %s\n", g_mesh_path);
+    printf("Vertices: %zu\n", g_mesh.vertices.size());
+    printf("Faces: %zu\n", g_mesh.faces.size());
+  } else {
+    printf("HW2 Part 1: %s\n", g_mesh_error.c_str());
+  }
+
+  fflush(stdout);
+}
+
+// HW1 Part 5: UI-controlled rendering state.
 static float g_red_strength = 1.0f;
 static float g_green_strength = 1.0f;
 static float g_ring_scale = 1800.0f;
 static int g_boost_blue = 1;
 
-// HW1 Part 6: line drawing state
+// HW1 Part 6: line drawing state.
 struct DrawnLine {
   int x0;
   int y0;
@@ -77,6 +227,8 @@ static int point_inside_ui(int x, int y) {
   if (point_inside_rect(x, y, 395, 235, 380, 80))
     return 1;
   if (point_inside_rect(x, y, 395, 330, 380, 220))
+    return 1;
+  if (point_inside_rect(x, y, 395, 565, 380, 125))
     return 1;
   return 0;
 }
@@ -167,8 +319,7 @@ int main() {
   const glm::vec4 point(1.0f, 2.0f, 3.0f, 1.0f);
 
   const glm::mat4 translation = glm::translate(
-      glm::mat4(1.0f),
-      glm::vec3(10.0f, 20.0f, 30.0f));
+      glm::mat4(1.0f), glm::vec3(10.0f, 20.0f, 30.0f));
 
   const glm::vec4 result = translation * point;
 
@@ -179,6 +330,9 @@ int main() {
          result.x, result.y, result.z);
   fflush(stdout);
 
+  // HW2 Part 1: load the mesh once at startup.
+  reload_mesh();
+
   struct mfb_window *window =
       mfb_open_ex("MiniGUI Platform", WIDTH, HEIGHT, MFB_WF_RESIZABLE);
   if (!window)
@@ -187,7 +341,7 @@ int main() {
   mu_Context *ctx = (mu_Context *)malloc(sizeof(mu_Context));
   mu_init(ctx);
 
-  // Set font callbacks for microui
+  // Set font callbacks for microui.
   ctx->text_width = [](mu_Font font, const char *str, int len) {
     return (len < 0 ? (int)strlen(str) : len) * 8;
   };
@@ -195,12 +349,12 @@ int main() {
 
   UIRenderer renderer(WIDTH, HEIGHT);
 
-  // Set up char input callback for textbox input
+  // Set up char input callback for textbox input.
   mfb_set_char_input_callback(
       [](struct mfb_window *w, unsigned int c) {
         extern void ui_bridge_char_input(struct mfb_window *, unsigned int);
 
-        // HW1 Part 3: press P to toggle the background pattern
+        // HW1 Part 3: press P to toggle the background pattern.
         if (c == 'p' || c == 'P') {
           g_pattern_mode = 1 - g_pattern_mode;
           printf("HW1 Part 3: pattern mode = %d\n", g_pattern_mode);
@@ -212,28 +366,23 @@ int main() {
       window);
 
   while (mfb_update_events(window) != MFB_STATE_EXIT) {
-    // 1. Input
+    // 1. Input.
     ui_bridge_input(ctx, window);
     handle_line_drawing(ctx);
 
-    // 2. Scene Rendering (Background)
+    // 2. Scene Rendering (Background).
     for (int i = 0; i < WIDTH * HEIGHT; i++) {
       int x = i % WIDTH;
       int y = i / WIDTH;
 
-      // Center of the screen
       int cx = x - WIDTH / 2;
       int cy = y - HEIGHT / 2;
 
-      // Distance-like value from the center.
-      // We use cx*cx + cy*cy to create circular/ring patterns.
       int scale = (int)g_ring_scale;
-      if (scale < 200) {
+      if (scale < 200)
         scale = 200;
-      }
-      int dist_pattern = (cx * cx + cy * cy) / scale;
 
-      // Checkerboard value based on both x and y.
+      int dist_pattern = (cx * cx + cy * cy) / scale;
       int checker = ((x / 60) + (y / 60)) % 2;
 
       uint8_t r;
@@ -241,17 +390,16 @@ int main() {
       uint8_t b;
 
       if (g_pattern_mode == 0) {
-        // Creative 2D color pattern: rings + checker influence
-        int red_value = (int)(((dist_pattern + x / 5) % 256) * g_red_strength);
+        int red_value =
+            (int)(((dist_pattern + x / 5) % 256) * g_red_strength);
         int green_value =
             (int)(((dist_pattern + y / 4) % 256) * g_green_strength);
         int blue_value;
 
-        if (g_boost_blue) {
+        if (g_boost_blue)
           blue_value = checker ? 240 : (dist_pattern * 4) % 256;
-        } else {
+        else
           blue_value = checker ? 90 : (dist_pattern * 2) % 128;
-        }
 
         if (red_value > 255)
           red_value = 255;
@@ -264,7 +412,6 @@ int main() {
         g = (uint8_t)green_value;
         b = (uint8_t)blue_value;
       } else {
-        // HW1 Part 3: alternate keyboard-controlled pattern
         int diagonal = ((x + y) / 45) % 2;
 
         int red_value =
@@ -274,11 +421,10 @@ int main() {
             (int)(((x / 3 + dist_pattern * 2) % 256) * g_green_strength);
         int blue_value;
 
-        if (g_boost_blue) {
+        if (g_boost_blue)
           blue_value = diagonal ? 130 : (255 - ((y / 3 + dist_pattern) % 256));
-        } else {
+        else
           blue_value = diagonal ? 60 : (120 - ((y / 6 + dist_pattern) % 120));
-        }
 
         if (red_value > 255)
           red_value = 255;
@@ -297,7 +443,7 @@ int main() {
       g_buffer[i] = MFB_RGB(r, g, b);
     }
 
-    // HW1 Part 6: draw all saved lines on top of the framebuffer background
+    // HW1 Part 6: draw saved lines.
     for (int i = 0; i < g_line_count; i++) {
       draw_line_bresenham(g_lines[i].x0, g_lines[i].y0, g_lines[i].x1,
                           g_lines[i].y1, g_lines[i].color);
@@ -308,7 +454,7 @@ int main() {
                           g_line_preview_y, current_line_color());
     }
 
-    // 3. UI Logic
+    // 3. UI Logic.
     static float slider_val = 50.0f;
     static float number_val = 3.14f;
     static int checkbox_a = 0;
@@ -323,43 +469,34 @@ int main() {
     if (mu_begin_window(ctx, "Widgets", mu_rect(20, 20, 360, 540))) {
       int w1[] = {-1};
 
-      // label / text
       mu_layout_row(ctx, 1, w1, 0);
       mu_label(ctx, "mu_label: plain static text");
       mu_text(ctx, "mu_text: word-wrapped longer text that will reflow inside "
                    "the window width automatically.");
 
-      // button
       mu_layout_row(ctx, 1, w1, 0);
-      if (mu_button(ctx, "mu_button: click me")) {
+      if (mu_button(ctx, "mu_button: click me"))
         quit_requested = false;
-      }
 
-      // HW1 Part 2: custom immediate-mode UI widget
       mu_layout_row(ctx, 1, w1, 0);
-      if (mu_button(ctx, "Toggle pattern info")) {
+      if (mu_button(ctx, "Toggle pattern info"))
         show_pattern_info = !show_pattern_info;
-      }
 
       mu_layout_row(ctx, 1, w1, 0);
-      if (show_pattern_info) {
+      if (show_pattern_info)
         mu_label(ctx, "Pattern: rings + checkerboard");
-      } else {
+      else
         mu_label(ctx, "Pattern info hidden");
-      }
 
-      // HW1 Part 3: keyboard shortcut information
       mu_layout_row(ctx, 1, w1, 0);
       mu_label(ctx, "Press P to switch pattern");
 
       mu_layout_row(ctx, 1, w1, 0);
-      if (g_pattern_mode == 0) {
+      if (g_pattern_mode == 0)
         mu_label(ctx, "Keyboard mode: rings");
-      } else {
+      else
         mu_label(ctx, "Keyboard mode: alternate");
-      }
 
-      // HW1 Part 5: pattern controls
       mu_layout_row(ctx, 1, w1, 0);
       mu_label(ctx, "HW1 Part 5: pattern controls");
 
@@ -378,33 +515,27 @@ int main() {
       mu_layout_row(ctx, 1, w1, 0);
       mu_checkbox(ctx, "Boost blue channel", &g_boost_blue);
 
-      // checkbox
       mu_layout_row(ctx, 1, w1, 0);
       mu_checkbox(ctx, "mu_checkbox A (off)", &checkbox_a);
       mu_checkbox(ctx, "mu_checkbox B (on)", &checkbox_b);
 
-      // textbox
       mu_layout_row(ctx, 1, w1, 0);
       mu_label(ctx, "mu_textbox:");
       mu_textbox(ctx, textbox_buf, sizeof(textbox_buf));
 
-      // slider
       mu_layout_row(ctx, 1, w1, 0);
       mu_label(ctx, "mu_slider (0-100):");
       mu_slider(ctx, &slider_val, 0, 100);
 
-      // number
       mu_layout_row(ctx, 1, w1, 0);
       mu_label(ctx, "mu_number (step 0.1):");
       mu_number(ctx, &number_val, 0.1f);
 
-      // header
       if (mu_header(ctx, "mu_header: collapsible section")) {
         mu_layout_row(ctx, 1, w1, 0);
         mu_label(ctx, "Content inside the header.");
       }
 
-      // treenode
       if (mu_begin_treenode(ctx, "mu_treenode: root")) {
         mu_layout_row(ctx, 1, w1, 0);
         mu_label(ctx, "child item A");
@@ -416,11 +547,9 @@ int main() {
         mu_end_treenode(ctx);
       }
 
-      // quit button
       mu_layout_row(ctx, 1, w1, 0);
-      if (mu_button(ctx, "Quit")) {
+      if (mu_button(ctx, "Quit"))
         quit_requested = true;
-      }
 
       mu_end_window(ctx);
     }
@@ -452,16 +581,17 @@ int main() {
         ctx->hover_root = ctx->next_hover_root = popup;
         mu_bring_to_front(ctx, popup);
       }
+
       int popup_opt = MU_OPT_POPUP | MU_OPT_NORESIZE | MU_OPT_NOSCROLL |
                       MU_OPT_NOTITLE | MU_OPT_CLOSED;
+
       if (mu_begin_window_ex(ctx, "my popup", mu_rect(0, 0, 260, 84),
                              popup_opt)) {
         int wp[] = {-1};
         mu_layout_row(ctx, 1, wp, 0);
         mu_label(ctx, "mu_popup: click outside to close");
-        if (mu_button(ctx, "Close")) {
+        if (mu_button(ctx, "Close"))
           mu_get_current_container(ctx)->open = 0;
-        }
         mu_end_window(ctx);
       }
       mu_end_window(ctx);
@@ -498,17 +628,40 @@ int main() {
       mu_end_window(ctx);
     }
 
-    mu_end(ctx);
+    // --- HW2 Part 1: mesh inspection ---
+    if (mu_begin_window(ctx, "HW2 Mesh Info",
+                        mu_rect(395, 565, 380, 125))) {
+      int widths[] = {-1};
+      mu_layout_row(ctx, 1, widths, 0);
+      mu_label(ctx, g_mesh_path);
 
-    if (quit_requested) {
-      mfb_close(window);
-      break;
+      if (g_mesh_loaded) {
+        char counts[96];
+        snprintf(counts, sizeof(counts), "Vertices: %zu   Faces: %zu",
+                 g_mesh.vertices.size(), g_mesh.faces.size());
+        mu_layout_row(ctx, 1, widths, 0);
+        mu_label(ctx, counts);
+      } else {
+        mu_layout_row(ctx, 1, widths, 0);
+        mu_text(ctx, g_mesh_error.c_str());
+      }
+
+      mu_layout_row(ctx, 1, widths, 0);
+      if (mu_button(ctx, "Reload OBJ"))
+        reload_mesh();
+
+      mu_end_window(ctx);
     }
 
-    // 4. UI Rendering
+    mu_end(ctx);
+
+    if (quit_requested)
+      break;
+
+    // 4. UI Rendering.
     renderer.render(ctx, g_buffer);
 
-    // 5. Display
+    // 5. Display.
     mfb_update_state state = mfb_update_ex(window, g_buffer, WIDTH, HEIGHT);
     if (state < 0)
       break;
