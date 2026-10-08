@@ -2,6 +2,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 extern "C" {
 #include "microui.h"
@@ -159,6 +163,22 @@ static void handle_line_drawing(mu_Context *ctx) {
 }
 
 int main() {
+  // HW2 Part 0: demonstrate a GLM translation.
+  const glm::vec4 point(1.0f, 2.0f, 3.0f, 1.0f);
+
+  const glm::mat4 translation = glm::translate(
+      glm::mat4(1.0f),
+      glm::vec3(10.0f, 20.0f, 30.0f));
+
+  const glm::vec4 result = translation * point;
+
+  printf("HW2 Part 0: GLM translation example\n");
+  printf("Original point: (%.1f, %.1f, %.1f)\n",
+         point.x, point.y, point.z);
+  printf("Translated point: (%.1f, %.1f, %.1f)\n",
+         result.x, result.y, result.z);
+  fflush(stdout);
+
   struct mfb_window *window =
       mfb_open_ex("MiniGUI Platform", WIDTH, HEIGHT, MFB_WF_RESIZABLE);
   if (!window)
@@ -312,7 +332,7 @@ int main() {
       // button
       mu_layout_row(ctx, 1, w1, 0);
       if (mu_button(ctx, "mu_button: click me")) {
-        quit_requested = false; // just a reaction
+        quit_requested = false;
       }
 
       // HW1 Part 2: custom immediate-mode UI widget
@@ -339,7 +359,7 @@ int main() {
         mu_label(ctx, "Keyboard mode: alternate");
       }
 
-      // HW1 Part 5: sliders and checkbox connected to the framebuffer pattern
+      // HW1 Part 5: pattern controls
       mu_layout_row(ctx, 1, w1, 0);
       mu_label(ctx, "HW1 Part 5: pattern controls");
 
@@ -378,7 +398,7 @@ int main() {
       mu_label(ctx, "mu_number (step 0.1):");
       mu_number(ctx, &number_val, 0.1f);
 
-      // header (collapsible section)
+      // header
       if (mu_header(ctx, "mu_header: collapsible section")) {
         mu_layout_row(ctx, 1, w1, 0);
         mu_label(ctx, "Content inside the header.");
@@ -493,7 +513,6 @@ int main() {
     if (state < 0)
       break;
 
-    // Cap FPS (optional, minifb has built-in sync)
     mfb_wait_sync(window);
   }
 
