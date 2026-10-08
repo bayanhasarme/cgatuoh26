@@ -30,7 +30,11 @@ extern "C" {
 static uint32_t g_buffer[WIDTH * HEIGHT];
 static int g_pattern_mode = 0;
 
-// HW2 Part 1: mesh data and OBJ loading.
+// HW2 Part 3: display options.
+static int g_show_hw1_tools = 0;
+static int g_show_pattern_background = 0;
+static int g_show_wireframe = 1;
+
 struct Face {
   std::array<size_t, 3> indices;
 };
@@ -45,8 +49,7 @@ static const char *g_mesh_path = "models/hw2_test.obj";
 static bool g_mesh_loaded = false;
 static std::string g_mesh_error;
 
-// HW2 Part 2: bounding box and temporary viewport transformation.
-// Keep the original vertices unchanged.
+// HW2 Part 2: retain the original mesh and store fitted vertices separately.
 struct ViewportFit {
   glm::vec3 minimum{0.0f};
   glm::vec3 maximum{0.0f};
@@ -60,7 +63,6 @@ static ViewportFit g_fit;
 
 static void calculate_viewport_fit(const Mesh &mesh) {
   g_fit = ViewportFit{};
-
   if (mesh.vertices.empty())
     return;
 
@@ -74,41 +76,33 @@ static void calculate_viewport_fit(const Mesh &mesh) {
 
   g_fit.center = (g_fit.minimum + g_fit.maximum) * 0.5f;
   const glm::vec3 extent = g_fit.maximum - g_fit.minimum;
-
   const float largest_extent =
       glm::max(extent.x, glm::max(extent.y, extent.z));
 
-  // Use 80% of the smaller window dimension.
-  // The same scale is used for all three axes.
   const float available_size =
       0.8f * glm::min(float(WIDTH), float(HEIGHT));
 
-  // A mesh whose vertices all coincide must not cause division by zero.
   g_fit.scale =
       largest_extent > 0.0f ? available_size / largest_extent : 1.0f;
 
   const glm::vec3 screen_center(
       WIDTH * 0.5f, HEIGHT * 0.5f, 0.0f);
 
-  // p_fitted = scale * p + translation
-  //          = scale * (p - model_center) + screen_center
   g_fit.translation = screen_center - g_fit.scale * g_fit.center;
 
   g_fit.fitted_vertices.reserve(mesh.vertices.size());
-
   for (const glm::vec3 &vertex : mesh.vertices) {
     g_fit.fitted_vertices.push_back(
         g_fit.scale * vertex + g_fit.translation);
   }
 }
 
-// OBJ indices start at 1.
-// Negative indices count backwards from the vertices read so far.
-// For "1/2/3" or "1//3", only the vertex index is used.
+// HW2 Part 1: OBJ vertex indices.
+// Positive indices start at 1; negative indices count backwards.
+// Slash-separated tokens use only their first field.
 static bool parse_obj_index(const std::string &token, size_t vertex_count,
                             size_t &index) {
   const std::string number = token.substr(0, token.find('/'));
-
   try {
     size_t consumed = 0;
     const long long value = std::stoll(number, &consumed);
@@ -128,7 +122,6 @@ static bool parse_obj_index(const std::string &token, size_t vertex_count,
         return false;
       index = static_cast<size_t>(resolved);
     }
-
     return true;
   } catch (...) {
     return false;
@@ -152,7 +145,6 @@ static bool load_obj(const char *path, Mesh &mesh, std::string &error) {
 
   while (std::getline(file, line)) {
     ++line_number;
-
     const size_t comment = line.find('#');
     if (comment != std::string::npos)
       line.erase(comment);
@@ -170,7 +162,6 @@ static bool load_obj(const char *path, Mesh &mesh, std::string &error) {
         error = "Invalid vertex at line " + std::to_string(line_number);
         return false;
       }
-
       loaded.vertices.push_back(vertex);
     } else if (type == "f") {
       std::array<std::string, 3> tokens;
@@ -192,10 +183,8 @@ static bool load_obj(const char *path, Mesh &mesh, std::string &error) {
           return false;
         }
       }
-
       loaded.faces.push_back(face);
     }
-
     // Other OBJ records are ignored.
   }
 
@@ -203,7 +192,6 @@ static bool load_obj(const char *path, Mesh &mesh, std::string &error) {
     error = "Error while reading the OBJ file.";
     return false;
   }
-
   if (loaded.vertices.empty() || loaded.faces.empty()) {
     error = "The OBJ must contain vertices and triangular faces.";
     return false;
@@ -243,17 +231,16 @@ static void reload_mesh() {
   } else {
     printf("HW2 Part 1: %s\n", g_mesh_error.c_str());
   }
-
   fflush(stdout);
 }
 
-// HW1 Part 5: UI-controlled rendering state.
+// HW1 Part 5.
 static float g_red_strength = 1.0f;
 static float g_green_strength = 1.0f;
 static float g_ring_scale = 1800.0f;
 static int g_boost_blue = 1;
 
-// HW1 Part 6: line drawing state.
+// HW1 Part 6.
 struct DrawnLine {
   int x0;
   int y0;
@@ -264,7 +251,6 @@ struct DrawnLine {
 
 static DrawnLine g_lines[MAX_LINES];
 static int g_line_count = 0;
-
 static int g_is_drawing = 0;
 static int g_prev_left_down = 0;
 static int g_line_start_x = 0;
@@ -297,30 +283,32 @@ static int point_inside_rect(int x, int y, int rx, int ry, int rw, int rh) {
 }
 
 static int point_inside_ui(int x, int y) {
-  if (point_inside_rect(x, y, 20, 20, 360, 540))
-    return 1;
-  if (point_inside_rect(x, y, 395, 20, 380, 200))
-    return 1;
-  if (point_inside_rect(x, y, 395, 235, 380, 80))
-    return 1;
-  if (point_inside_rect(x, y, 395, 330, 380, 220))
-    return 1;
-  if (point_inside_rect(x, y, 395, 565, 380, 125))
-    return 1;
   if (point_inside_rect(x, y, 790, 20, 200, 300))
     return 1;
+  if (point_inside_rect(x, y, 790, 335, 200, 345))
+    return 1;
+
+  if (g_show_hw1_tools) {
+    if (point_inside_rect(x, y, 20, 20, 360, 540))
+      return 1;
+    if (point_inside_rect(x, y, 395, 20, 380, 200))
+      return 1;
+    if (point_inside_rect(x, y, 395, 235, 380, 80))
+      return 1;
+    if (point_inside_rect(x, y, 395, 330, 380, 220))
+      return 1;
+  }
   return 0;
 }
 
+// The same Bresenham implementation used in HW1.
 static void draw_pixel_to_buffer(int x, int y, uint32_t color) {
   for (int dy = -1; dy <= 1; dy++) {
     for (int dx = -1; dx <= 1; dx++) {
       int px = x + dx;
       int py = y + dy;
-
       if (px < 0 || px >= WIDTH || py < 0 || py >= HEIGHT)
         continue;
-
       g_buffer[py * WIDTH + px] = color;
     }
   }
@@ -336,17 +324,14 @@ static void draw_line_bresenham(int x0, int y0, int x1, int y1,
 
   while (true) {
     draw_pixel_to_buffer(x0, y0, color);
-
     if (x0 == x1 && y0 == y1)
       break;
 
     int e2 = 2 * err;
-
     if (e2 >= dy) {
       err += dy;
       x0 += sx;
     }
-
     if (e2 <= dx) {
       err += dx;
       y0 += sy;
@@ -354,11 +339,45 @@ static void draw_line_bresenham(int x0, int y0, int x1, int y1,
   }
 }
 
+// HW2 Part 3: orthographic projection drops Z.
+static glm::ivec2 project_orthographic(const glm::vec3 &vertex) {
+  return glm::ivec2(
+      static_cast<int>(std::lround(vertex.x)),
+      static_cast<int>(std::lround(vertex.y)));
+}
+
+static void draw_mesh_wireframe() {
+  if (!g_mesh_loaded || !g_show_wireframe)
+    return;
+
+  const uint32_t color = MFB_RGB(255, 255, 255);
+
+  for (const Face &face : g_mesh.faces) {
+    const glm::ivec2 a =
+        project_orthographic(g_fit.fitted_vertices[face.indices[0]]);
+    const glm::ivec2 b =
+        project_orthographic(g_fit.fitted_vertices[face.indices[1]]);
+    const glm::ivec2 c =
+        project_orthographic(g_fit.fitted_vertices[face.indices[2]]);
+
+    draw_line_bresenham(a.x, a.y, b.x, b.y, color);
+    draw_line_bresenham(b.x, b.y, c.x, c.y, color);
+    draw_line_bresenham(c.x, c.y, a.x, a.y, color);
+  }
+}
+
 static void handle_line_drawing(mu_Context *ctx) {
   int mouse_x = clamp_int(ctx->mouse_pos.x, 0, WIDTH - 1);
   int mouse_y = clamp_int(ctx->mouse_pos.y, 0, HEIGHT - 1);
-
   int left_down = (ctx->mouse_down & MU_MOUSE_LEFT) != 0;
+
+  // Keep the HW1 drawing tool inactive while its controls are hidden.
+  if (!g_show_hw1_tools) {
+    g_is_drawing = 0;
+    g_prev_left_down = left_down;
+    return;
+  }
+
   int mouse_over_ui = point_inside_ui(mouse_x, mouse_y);
 
   if (g_enable_drawing && left_down && !g_prev_left_down && !mouse_over_ui) {
@@ -389,7 +408,6 @@ static void handle_line_drawing(mu_Context *ctx) {
   g_prev_left_down = left_down;
 }
 
-// Display a compact XYZ value in the bounding-box window.
 static void fit_vector_label(mu_Context *ctx, const char *name,
                              const glm::vec3 &value) {
   int widths[] = {-1};
@@ -397,7 +415,6 @@ static void fit_vector_label(mu_Context *ctx, const char *name,
 
   mu_layout_row(ctx, 1, widths, 0);
   mu_label(ctx, name);
-
   snprintf(text, sizeof(text), "(%.1f, %.1f, %.1f)",
            value.x, value.y, value.z);
   mu_layout_row(ctx, 1, widths, 0);
@@ -405,7 +422,6 @@ static void fit_vector_label(mu_Context *ctx, const char *name,
 }
 
 int main() {
-  // HW2 Part 0: demonstrate a GLM translation.
   const glm::vec4 point(1.0f, 2.0f, 3.0f, 1.0f);
   const glm::mat4 translation = glm::translate(
       glm::mat4(1.0f), glm::vec3(10.0f, 20.0f, 30.0f));
@@ -438,24 +454,26 @@ int main() {
   mfb_set_char_input_callback(
       [](struct mfb_window *w, unsigned int c) {
         extern void ui_bridge_char_input(struct mfb_window *, unsigned int);
-
         if (c == 'p' || c == 'P') {
           g_pattern_mode = 1 - g_pattern_mode;
           printf("HW1 Part 3: pattern mode = %d\n", g_pattern_mode);
           return;
         }
-
         ui_bridge_char_input(w, c);
       },
       window);
 
   while (mfb_update_events(window) != MFB_STATE_EXIT) {
-    // 1. Input.
     ui_bridge_input(ctx, window);
     handle_line_drawing(ctx);
 
-    // 2. Scene Rendering (Background).
+    // Background: plain dark color by default for wireframe visibility.
     for (int i = 0; i < WIDTH * HEIGHT; i++) {
+      if (!g_show_pattern_background) {
+        g_buffer[i] = MFB_RGB(20, 24, 32);
+        continue;
+      }
+
       int x = i % WIDTH;
       int y = i / WIDTH;
       int cx = x - WIDTH / 2;
@@ -467,75 +485,51 @@ int main() {
 
       int dist_pattern = (cx * cx + cy * cy) / scale;
       int checker = ((x / 60) + (y / 60)) % 2;
-
-      uint8_t r;
-      uint8_t g;
-      uint8_t b;
+      int red_value;
+      int green_value;
+      int blue_value;
 
       if (g_pattern_mode == 0) {
-        int red_value =
+        red_value =
             (int)(((dist_pattern + x / 5) % 256) * g_red_strength);
-        int green_value =
+        green_value =
             (int)(((dist_pattern + y / 4) % 256) * g_green_strength);
-        int blue_value;
-
         if (g_boost_blue)
           blue_value = checker ? 240 : (dist_pattern * 4) % 256;
         else
           blue_value = checker ? 90 : (dist_pattern * 2) % 128;
-
-        if (red_value > 255)
-          red_value = 255;
-        if (green_value > 255)
-          green_value = 255;
-        if (blue_value > 255)
-          blue_value = 255;
-
-        r = (uint8_t)red_value;
-        g = (uint8_t)green_value;
-        b = (uint8_t)blue_value;
       } else {
         int diagonal = ((x + y) / 45) % 2;
-        int red_value =
+        red_value =
             (int)((diagonal ? 230 : (dist_pattern + 40) % 256) *
                   g_red_strength);
-        int green_value =
+        green_value =
             (int)(((x / 3 + dist_pattern * 2) % 256) * g_green_strength);
-        int blue_value;
-
         if (g_boost_blue)
           blue_value = diagonal ? 130 : (255 - ((y / 3 + dist_pattern) % 256));
         else
           blue_value = diagonal ? 60 : (120 - ((y / 6 + dist_pattern) % 120));
-
-        if (red_value > 255)
-          red_value = 255;
-        if (green_value > 255)
-          green_value = 255;
-        if (blue_value > 255)
-          blue_value = 255;
-        if (blue_value < 0)
-          blue_value = 0;
-
-        r = (uint8_t)red_value;
-        g = (uint8_t)green_value;
-        b = (uint8_t)blue_value;
       }
 
-      g_buffer[i] = MFB_RGB(r, g, b);
+      g_buffer[i] = MFB_RGB(
+          (uint8_t)clamp_int(red_value, 0, 255),
+          (uint8_t)clamp_int(green_value, 0, 255),
+          (uint8_t)clamp_int(blue_value, 0, 255));
     }
 
-    for (int i = 0; i < g_line_count; i++) {
-      draw_line_bresenham(g_lines[i].x0, g_lines[i].y0, g_lines[i].x1,
-                          g_lines[i].y1, g_lines[i].color);
+    draw_mesh_wireframe();
+
+    if (g_show_hw1_tools) {
+      for (int i = 0; i < g_line_count; i++) {
+        draw_line_bresenham(g_lines[i].x0, g_lines[i].y0, g_lines[i].x1,
+                            g_lines[i].y1, g_lines[i].color);
+      }
+      if (g_is_drawing) {
+        draw_line_bresenham(g_line_start_x, g_line_start_y, g_line_preview_x,
+                            g_line_preview_y, current_line_color());
+      }
     }
 
-    if (g_is_drawing) {
-      draw_line_bresenham(g_line_start_x, g_line_start_y, g_line_preview_x,
-                          g_line_preview_y, current_line_color());
-    }
-
-    // 3. UI Logic.
     static float slider_val = 50.0f;
     static float number_val = 3.14f;
     static int checkbox_a = 0;
@@ -546,181 +540,161 @@ int main() {
 
     mu_begin(ctx);
 
-    if (mu_begin_window(ctx, "Widgets", mu_rect(20, 20, 360, 540))) {
-      int w1[] = {-1};
-
-      mu_layout_row(ctx, 1, w1, 0);
-      mu_label(ctx, "mu_label: plain static text");
-      mu_text(ctx, "mu_text: word-wrapped longer text that will reflow inside "
-                   "the window width automatically.");
-
-      mu_layout_row(ctx, 1, w1, 0);
-      if (mu_button(ctx, "mu_button: click me"))
-        quit_requested = false;
-
-      mu_layout_row(ctx, 1, w1, 0);
-      if (mu_button(ctx, "Toggle pattern info"))
-        show_pattern_info = !show_pattern_info;
-
-      mu_layout_row(ctx, 1, w1, 0);
-      if (show_pattern_info)
-        mu_label(ctx, "Pattern: rings + checkerboard");
-      else
-        mu_label(ctx, "Pattern info hidden");
-
-      mu_layout_row(ctx, 1, w1, 0);
-      mu_label(ctx, "Press P to switch pattern");
-
-      mu_layout_row(ctx, 1, w1, 0);
-      if (g_pattern_mode == 0)
-        mu_label(ctx, "Keyboard mode: rings");
-      else
-        mu_label(ctx, "Keyboard mode: alternate");
-
-      mu_layout_row(ctx, 1, w1, 0);
-      mu_label(ctx, "HW1 Part 5: pattern controls");
-
-      mu_layout_row(ctx, 1, w1, 0);
-      mu_label(ctx, "Red strength:");
-      mu_slider(ctx, &g_red_strength, 0.2f, 2.0f);
-
-      mu_layout_row(ctx, 1, w1, 0);
-      mu_label(ctx, "Green strength:");
-      mu_slider(ctx, &g_green_strength, 0.2f, 2.0f);
-
-      mu_layout_row(ctx, 1, w1, 0);
-      mu_label(ctx, "Ring scale:");
-      mu_slider(ctx, &g_ring_scale, 400.0f, 4000.0f);
-
-      mu_layout_row(ctx, 1, w1, 0);
-      mu_checkbox(ctx, "Boost blue channel", &g_boost_blue);
-
-      mu_layout_row(ctx, 1, w1, 0);
-      mu_checkbox(ctx, "mu_checkbox A (off)", &checkbox_a);
-      mu_checkbox(ctx, "mu_checkbox B (on)", &checkbox_b);
-
-      mu_layout_row(ctx, 1, w1, 0);
-      mu_label(ctx, "mu_textbox:");
-      mu_textbox(ctx, textbox_buf, sizeof(textbox_buf));
-
-      mu_layout_row(ctx, 1, w1, 0);
-      mu_label(ctx, "mu_slider (0-100):");
-      mu_slider(ctx, &slider_val, 0, 100);
-
-      mu_layout_row(ctx, 1, w1, 0);
-      mu_label(ctx, "mu_number (step 0.1):");
-      mu_number(ctx, &number_val, 0.1f);
-
-      if (mu_header(ctx, "mu_header: collapsible section")) {
+    // Preserve the HW1 windows, with visibility controlled by a checkbox.
+    if (g_show_hw1_tools) {
+      if (mu_begin_window(ctx, "Widgets", mu_rect(20, 20, 360, 540))) {
+        int w1[] = {-1};
         mu_layout_row(ctx, 1, w1, 0);
-        mu_label(ctx, "Content inside the header.");
-      }
+        mu_label(ctx, "mu_label: plain static text");
+        mu_text(ctx, "mu_text: word-wrapped longer text that will reflow inside "
+                     "the window width automatically.");
 
-      if (mu_begin_treenode(ctx, "mu_treenode: root")) {
         mu_layout_row(ctx, 1, w1, 0);
-        mu_label(ctx, "child item A");
-        if (mu_begin_treenode(ctx, "nested node")) {
+        if (mu_button(ctx, "mu_button: click me"))
+          quit_requested = false;
+
+        mu_layout_row(ctx, 1, w1, 0);
+        if (mu_button(ctx, "Toggle pattern info"))
+          show_pattern_info = !show_pattern_info;
+
+        mu_layout_row(ctx, 1, w1, 0);
+        mu_label(ctx, show_pattern_info ?
+                 "Pattern: rings + checkerboard" : "Pattern info hidden");
+
+        mu_layout_row(ctx, 1, w1, 0);
+        mu_label(ctx, "Press P to switch pattern");
+        mu_layout_row(ctx, 1, w1, 0);
+        mu_label(ctx, g_pattern_mode == 0 ?
+                 "Keyboard mode: rings" : "Keyboard mode: alternate");
+
+        mu_layout_row(ctx, 1, w1, 0);
+        mu_label(ctx, "HW1 Part 5: pattern controls");
+
+        mu_layout_row(ctx, 1, w1, 0);
+        mu_label(ctx, "Red strength:");
+        mu_slider(ctx, &g_red_strength, 0.2f, 2.0f);
+        mu_layout_row(ctx, 1, w1, 0);
+        mu_label(ctx, "Green strength:");
+        mu_slider(ctx, &g_green_strength, 0.2f, 2.0f);
+        mu_layout_row(ctx, 1, w1, 0);
+        mu_label(ctx, "Ring scale:");
+        mu_slider(ctx, &g_ring_scale, 400.0f, 4000.0f);
+        mu_layout_row(ctx, 1, w1, 0);
+        mu_checkbox(ctx, "Boost blue channel", &g_boost_blue);
+
+        mu_layout_row(ctx, 1, w1, 0);
+        mu_checkbox(ctx, "mu_checkbox A (off)", &checkbox_a);
+        mu_checkbox(ctx, "mu_checkbox B (on)", &checkbox_b);
+
+        mu_layout_row(ctx, 1, w1, 0);
+        mu_label(ctx, "mu_textbox:");
+        mu_textbox(ctx, textbox_buf, sizeof(textbox_buf));
+        mu_layout_row(ctx, 1, w1, 0);
+        mu_label(ctx, "mu_slider (0-100):");
+        mu_slider(ctx, &slider_val, 0, 100);
+        mu_layout_row(ctx, 1, w1, 0);
+        mu_label(ctx, "mu_number (step 0.1):");
+        mu_number(ctx, &number_val, 0.1f);
+
+        if (mu_header(ctx, "mu_header: collapsible section")) {
           mu_layout_row(ctx, 1, w1, 0);
-          mu_label(ctx, "deeply nested item");
+          mu_label(ctx, "Content inside the header.");
+        }
+        if (mu_begin_treenode(ctx, "mu_treenode: root")) {
+          mu_layout_row(ctx, 1, w1, 0);
+          mu_label(ctx, "child item A");
+          if (mu_begin_treenode(ctx, "nested node")) {
+            mu_layout_row(ctx, 1, w1, 0);
+            mu_label(ctx, "deeply nested item");
+            mu_end_treenode(ctx);
+          }
           mu_end_treenode(ctx);
         }
-        mu_end_treenode(ctx);
-      }
 
-      mu_layout_row(ctx, 1, w1, 0);
-      if (mu_button(ctx, "Quit"))
-        quit_requested = true;
-
-      mu_end_window(ctx);
-    }
-
-    if (mu_begin_window(ctx, "Panel Demo", mu_rect(395, 20, 380, 200))) {
-      int w2[] = {-1};
-      mu_layout_row(ctx, 1, w2, 120);
-      mu_begin_panel(ctx, "scrollable panel");
-      int wp[] = {-1};
-
-      for (int i = 1; i <= 12; i++) {
-        mu_layout_row(ctx, 1, wp, 0);
-        char line[32];
-        snprintf(line, sizeof(line), "Panel row %d", i);
-        mu_label(ctx, line);
-      }
-
-      mu_end_panel(ctx);
-      mu_end_window(ctx);
-    }
-
-    if (mu_begin_window(ctx, "Popup Demo", mu_rect(395, 235, 380, 80))) {
-      int w3[] = {-1};
-      mu_layout_row(ctx, 1, w3, 0);
-
-      if (mu_button(ctx, "Open popup")) {
-        mu_Container *popup = mu_get_container(ctx, "my popup");
-        popup->rect = mu_rect(ctx->mouse_pos.x, ctx->mouse_pos.y, 260, 84);
-        popup->open = 1;
-        ctx->hover_root = ctx->next_hover_root = popup;
-        mu_bring_to_front(ctx, popup);
-      }
-
-      int popup_opt = MU_OPT_POPUP | MU_OPT_NORESIZE | MU_OPT_NOSCROLL |
-                      MU_OPT_NOTITLE | MU_OPT_CLOSED;
-
-      if (mu_begin_window_ex(ctx, "my popup", mu_rect(0, 0, 260, 84),
-                             popup_opt)) {
-        int wp[] = {-1};
-        mu_layout_row(ctx, 1, wp, 0);
-        mu_label(ctx, "mu_popup: click outside to close");
-        if (mu_button(ctx, "Close"))
-          mu_get_current_container(ctx)->open = 0;
+        mu_layout_row(ctx, 1, w1, 0);
+        if (mu_button(ctx, "Quit"))
+          quit_requested = true;
         mu_end_window(ctx);
       }
 
-      mu_end_window(ctx);
-    }
-
-    if (mu_begin_window(ctx, "Line Drawing", mu_rect(395, 330, 380, 220))) {
-      int w4[] = {-1};
-
-      mu_layout_row(ctx, 1, w4, 0);
-      mu_label(ctx, "Click-drag-release outside UI");
-
-      mu_layout_row(ctx, 1, w4, 0);
-      mu_checkbox(ctx, "Enable drawing", &g_enable_drawing);
-
-      mu_layout_row(ctx, 1, w4, 0);
-      mu_label(ctx, "Line red:");
-      mu_slider(ctx, &g_line_red, 0.0f, 255.0f);
-
-      mu_layout_row(ctx, 1, w4, 0);
-      mu_label(ctx, "Line green:");
-      mu_slider(ctx, &g_line_green, 0.0f, 255.0f);
-
-      mu_layout_row(ctx, 1, w4, 0);
-      mu_label(ctx, "Line blue:");
-      mu_slider(ctx, &g_line_blue, 0.0f, 255.0f);
-
-      mu_layout_row(ctx, 1, w4, 0);
-      if (mu_button(ctx, "Clear lines")) {
-        g_line_count = 0;
-        g_is_drawing = 0;
+      if (mu_begin_window(ctx, "Panel Demo", mu_rect(395, 20, 380, 200))) {
+        int w2[] = {-1};
+        mu_layout_row(ctx, 1, w2, 120);
+        mu_begin_panel(ctx, "scrollable panel");
+        int wp[] = {-1};
+        for (int i = 1; i <= 12; i++) {
+          mu_layout_row(ctx, 1, wp, 0);
+          char line[32];
+          snprintf(line, sizeof(line), "Panel row %d", i);
+          mu_label(ctx, line);
+        }
+        mu_end_panel(ctx);
+        mu_end_window(ctx);
       }
 
-      mu_end_window(ctx);
+      if (mu_begin_window(ctx, "Popup Demo", mu_rect(395, 235, 380, 80))) {
+        int w3[] = {-1};
+        mu_layout_row(ctx, 1, w3, 0);
+        if (mu_button(ctx, "Open popup")) {
+          mu_Container *popup = mu_get_container(ctx, "my popup");
+          popup->rect = mu_rect(ctx->mouse_pos.x, ctx->mouse_pos.y, 260, 84);
+          popup->open = 1;
+          ctx->hover_root = ctx->next_hover_root = popup;
+          mu_bring_to_front(ctx, popup);
+        }
+        int popup_opt = MU_OPT_POPUP | MU_OPT_NORESIZE | MU_OPT_NOSCROLL |
+                        MU_OPT_NOTITLE | MU_OPT_CLOSED;
+        if (mu_begin_window_ex(ctx, "my popup", mu_rect(0, 0, 260, 84),
+                               popup_opt)) {
+          int wp[] = {-1};
+          mu_layout_row(ctx, 1, wp, 0);
+          mu_label(ctx, "mu_popup: click outside to close");
+          if (mu_button(ctx, "Close"))
+            mu_get_current_container(ctx)->open = 0;
+          mu_end_window(ctx);
+        }
+        mu_end_window(ctx);
+      }
+
+      if (mu_begin_window(ctx, "Line Drawing", mu_rect(395, 330, 380, 220))) {
+        int w4[] = {-1};
+        mu_layout_row(ctx, 1, w4, 0);
+        mu_label(ctx, "Click-drag-release outside UI");
+        mu_layout_row(ctx, 1, w4, 0);
+        mu_checkbox(ctx, "Enable drawing", &g_enable_drawing);
+        mu_layout_row(ctx, 1, w4, 0);
+        mu_label(ctx, "Line red:");
+        mu_slider(ctx, &g_line_red, 0.0f, 255.0f);
+        mu_layout_row(ctx, 1, w4, 0);
+        mu_label(ctx, "Line green:");
+        mu_slider(ctx, &g_line_green, 0.0f, 255.0f);
+        mu_layout_row(ctx, 1, w4, 0);
+        mu_label(ctx, "Line blue:");
+        mu_slider(ctx, &g_line_blue, 0.0f, 255.0f);
+        mu_layout_row(ctx, 1, w4, 0);
+        if (mu_button(ctx, "Clear lines")) {
+          g_line_count = 0;
+          g_is_drawing = 0;
+        }
+        mu_end_window(ctx);
+      }
     }
 
+    // A right-hand column leaves the complete wireframe visible.
     if (mu_begin_window(ctx, "HW2 Mesh Info",
-                        mu_rect(395, 565, 380, 125))) {
+                        mu_rect(790, 335, 200, 345))) {
       int widths[] = {-1};
       mu_layout_row(ctx, 1, widths, 0);
-      mu_label(ctx, g_mesh_path);
+      mu_text(ctx, g_mesh_path);
 
       if (g_mesh_loaded) {
-        char counts[96];
-        snprintf(counts, sizeof(counts), "Vertices: %zu   Faces: %zu",
-                 g_mesh.vertices.size(), g_mesh.faces.size());
+        char text[64];
+        snprintf(text, sizeof(text), "Vertices: %zu", g_mesh.vertices.size());
         mu_layout_row(ctx, 1, widths, 0);
-        mu_label(ctx, counts);
+        mu_label(ctx, text);
+        snprintf(text, sizeof(text), "Faces: %zu", g_mesh.faces.size());
+        mu_layout_row(ctx, 1, widths, 0);
+        mu_label(ctx, text);
       } else {
         mu_layout_row(ctx, 1, widths, 0);
         mu_text(ctx, g_mesh_error.c_str());
@@ -730,14 +704,26 @@ int main() {
       if (mu_button(ctx, "Reload OBJ"))
         reload_mesh();
 
+      mu_layout_row(ctx, 1, widths, 0);
+      mu_checkbox(ctx, "Show wireframe", &g_show_wireframe);
+      mu_layout_row(ctx, 1, widths, 0);
+      mu_checkbox(ctx, "Pattern background", &g_show_pattern_background);
+      mu_layout_row(ctx, 1, widths, 0);
+      mu_checkbox(ctx, "Show HW1 tools", &g_show_hw1_tools);
+
+      mu_layout_row(ctx, 1, widths, 0);
+      mu_text(ctx, "Orthographic: use X,Y and drop Z.");
+
+      mu_layout_row(ctx, 1, widths, 0);
+      if (mu_button(ctx, "Quit"))
+        quit_requested = true;
+
       mu_end_window(ctx);
     }
 
-    // HW2 Part 2: inspect the computed transformation.
     if (mu_begin_window(ctx, "HW2 Bounding Box",
                         mu_rect(790, 20, 200, 300))) {
       int widths[] = {-1};
-
       if (g_mesh_loaded) {
         fit_vector_label(ctx, "Minimum XYZ:", g_fit.minimum);
         fit_vector_label(ctx, "Maximum XYZ:", g_fit.maximum);
@@ -747,21 +733,17 @@ int main() {
         snprintf(text, sizeof(text), "Scale: %.2f", g_fit.scale);
         mu_layout_row(ctx, 1, widths, 0);
         mu_label(ctx, text);
-
         fit_vector_label(ctx, "Translation XYZ:", g_fit.translation);
-
         mu_layout_row(ctx, 1, widths, 0);
         mu_text(ctx, "Fit uses 80% of the smaller window dimension.");
       } else {
         mu_layout_row(ctx, 1, widths, 0);
         mu_label(ctx, "No mesh loaded.");
       }
-
       mu_end_window(ctx);
     }
 
     mu_end(ctx);
-
     if (quit_requested)
       break;
 
@@ -770,7 +752,6 @@ int main() {
     mfb_update_state state = mfb_update_ex(window, g_buffer, WIDTH, HEIGHT);
     if (state < 0)
       break;
-
     mfb_wait_sync(window);
   }
 
