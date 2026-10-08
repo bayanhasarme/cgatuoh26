@@ -30,10 +30,22 @@ extern "C" {
 static uint32_t g_buffer[WIDTH * HEIGHT];
 static int g_pattern_mode = 0;
 
-// HW2 Part 3: display options.
 static int g_show_hw1_tools = 0;
 static int g_show_pattern_background = 0;
 static int g_show_wireframe = 1;
+static int g_show_transforms = 1;
+
+// HW2 Part 4: independent Local and World transformation values.
+// Rotation values are stored in degrees.
+// These values will be applied to the mesh in Part 5.
+struct TransformState {
+  glm::vec3 translation{0.0f};
+  glm::vec3 rotation{0.0f};
+  glm::vec3 scale{1.0f};
+};
+
+static TransformState g_local_transform;
+static TransformState g_world_transform;
 
 struct Face {
   std::array<size_t, 3> indices;
@@ -49,7 +61,7 @@ static const char *g_mesh_path = "models/hw2_test.obj";
 static bool g_mesh_loaded = false;
 static std::string g_mesh_error;
 
-// HW2 Part 2: retain the original mesh and store fitted vertices separately.
+// Preserve the original vertices and store the fitted vertices separately.
 struct ViewportFit {
   glm::vec3 minimum{0.0f};
   glm::vec3 maximum{0.0f};
@@ -78,7 +90,6 @@ static void calculate_viewport_fit(const Mesh &mesh) {
   const glm::vec3 extent = g_fit.maximum - g_fit.minimum;
   const float largest_extent =
       glm::max(extent.x, glm::max(extent.y, extent.z));
-
   const float available_size =
       0.8f * glm::min(float(WIDTH), float(HEIGHT));
 
@@ -87,7 +98,6 @@ static void calculate_viewport_fit(const Mesh &mesh) {
 
   const glm::vec3 screen_center(
       WIDTH * 0.5f, HEIGHT * 0.5f, 0.0f);
-
   g_fit.translation = screen_center - g_fit.scale * g_fit.center;
 
   g_fit.fitted_vertices.reserve(mesh.vertices.size());
@@ -97,9 +107,9 @@ static void calculate_viewport_fit(const Mesh &mesh) {
   }
 }
 
-// HW2 Part 1: OBJ vertex indices.
-// Positive indices start at 1; negative indices count backwards.
-// Slash-separated tokens use only their first field.
+// Positive OBJ indices start at 1.
+// Negative indices count backwards from the vertices read so far.
+// For slash-separated tokens, only the vertex index is used.
 static bool parse_obj_index(const std::string &token, size_t vertex_count,
                             size_t &index) {
   const std::string number = token.substr(0, token.find('/'));
@@ -185,7 +195,6 @@ static bool load_obj(const char *path, Mesh &mesh, std::string &error) {
       }
       loaded.faces.push_back(face);
     }
-    // Other OBJ records are ignored.
   }
 
   if (file.bad()) {
@@ -234,13 +243,13 @@ static void reload_mesh() {
   fflush(stdout);
 }
 
-// HW1 Part 5.
+// HW1 pattern controls.
 static float g_red_strength = 1.0f;
 static float g_green_strength = 1.0f;
 static float g_ring_scale = 1800.0f;
 static int g_boost_blue = 1;
 
-// HW1 Part 6.
+// HW1 line drawing.
 struct DrawnLine {
   int x0;
   int y0;
@@ -287,6 +296,13 @@ static int point_inside_ui(int x, int y) {
     return 1;
   if (point_inside_rect(x, y, 790, 335, 200, 345))
     return 1;
+
+  if (g_show_transforms && !g_show_hw1_tools) {
+    if (point_inside_rect(x, y, 20, 420, 370, 260))
+      return 1;
+    if (point_inside_rect(x, y, 405, 420, 370, 260))
+      return 1;
+  }
 
   if (g_show_hw1_tools) {
     if (point_inside_rect(x, y, 20, 20, 360, 540))
@@ -339,7 +355,7 @@ static void draw_line_bresenham(int x0, int y0, int x1, int y1,
   }
 }
 
-// HW2 Part 3: orthographic projection drops Z.
+// Orthographic projection drops Z.
 static glm::ivec2 project_orthographic(const glm::vec3 &vertex) {
   return glm::ivec2(
       static_cast<int>(std::lround(vertex.x)),
@@ -351,7 +367,6 @@ static void draw_mesh_wireframe() {
     return;
 
   const uint32_t color = MFB_RGB(255, 255, 255);
-
   for (const Face &face : g_mesh.faces) {
     const glm::ivec2 a =
         project_orthographic(g_fit.fitted_vertices[face.indices[0]]);
@@ -371,7 +386,6 @@ static void handle_line_drawing(mu_Context *ctx) {
   int mouse_y = clamp_int(ctx->mouse_pos.y, 0, HEIGHT - 1);
   int left_down = (ctx->mouse_down & MU_MOUSE_LEFT) != 0;
 
-  // Keep the HW1 drawing tool inactive while its controls are hidden.
   if (!g_show_hw1_tools) {
     g_is_drawing = 0;
     g_prev_left_down = left_down;
@@ -421,6 +435,57 @@ static void fit_vector_label(mu_Context *ctx, const char *name,
   mu_text(ctx, text);
 }
 
+// HW2 Part 4: one row of three sliders, in X/Y/Z order.
+static void transform_vector_controls(mu_Context *ctx, const char *label,
+                                      glm::vec3 &value,
+                                      float minimum, float maximum) {
+  int full_width[] = {-1};
+  int axis_widths[] = {108, 108, -1};
+
+  mu_layout_row(ctx, 1, full_width, 0);
+  mu_label(ctx, label);
+
+  mu_layout_row(ctx, 3, axis_widths, 0);
+  mu_slider(ctx, &value.x, minimum, maximum);
+  mu_slider(ctx, &value.y, minimum, maximum);
+  mu_slider(ctx, &value.z, minimum, maximum);
+}
+
+static void transformation_window(mu_Context *ctx, const char *title,
+                                  mu_Rect rect, TransformState &state) {
+  // Fixed positions keep these two control windows side by side.
+  int options = MU_OPT_NORESIZE | MU_OPT_NOCLOSE | MU_OPT_NOTITLE;
+
+  if (mu_begin_window_ex(ctx, title, rect, options)) {
+    int full_width[] = {-1};
+    int axis_widths[] = {108, 108, -1};
+
+    mu_layout_row(ctx, 1, full_width, 0);
+    mu_label(ctx, title);
+
+    mu_layout_row(ctx, 3, axis_widths, 0);
+    mu_label(ctx, "X");
+    mu_label(ctx, "Y");
+    mu_label(ctx, "Z");
+
+    transform_vector_controls(ctx, "Translation (model units)",
+                              state.translation, -2.0f, 2.0f);
+    transform_vector_controls(ctx, "Rotation (degrees)",
+                              state.rotation, -180.0f, 180.0f);
+    transform_vector_controls(ctx, "Scale",
+                              state.scale, 0.1f, 3.0f);
+
+    mu_layout_row(ctx, 1, full_width, 0);
+    if (mu_button(ctx, "Reset this frame"))
+      state = TransformState{};
+
+    mu_layout_row(ctx, 1, full_width, 0);
+    mu_label(ctx, "Part 4: values only");
+
+    mu_end_window(ctx);
+  }
+}
+
 int main() {
   const glm::vec4 point(1.0f, 2.0f, 3.0f, 1.0f);
   const glm::mat4 translation = glm::translate(
@@ -467,7 +532,6 @@ int main() {
     ui_bridge_input(ctx, window);
     handle_line_drawing(ctx);
 
-    // Background: plain dark color by default for wireframe visibility.
     for (int i = 0; i < WIDTH * HEIGHT; i++) {
       if (!g_show_pattern_background) {
         g_buffer[i] = MFB_RGB(20, 24, 32);
@@ -478,7 +542,6 @@ int main() {
       int y = i / WIDTH;
       int cx = x - WIDTH / 2;
       int cy = y - HEIGHT / 2;
-
       int scale = (int)g_ring_scale;
       if (scale < 200)
         scale = 200;
@@ -506,9 +569,11 @@ int main() {
         green_value =
             (int)(((x / 3 + dist_pattern * 2) % 256) * g_green_strength);
         if (g_boost_blue)
-          blue_value = diagonal ? 130 : (255 - ((y / 3 + dist_pattern) % 256));
+          blue_value = diagonal ? 130 :
+              (255 - ((y / 3 + dist_pattern) % 256));
         else
-          blue_value = diagonal ? 60 : (120 - ((y / 6 + dist_pattern) % 120));
+          blue_value = diagonal ? 60 :
+              (120 - ((y / 6 + dist_pattern) % 120));
       }
 
       g_buffer[i] = MFB_RGB(
@@ -540,7 +605,6 @@ int main() {
 
     mu_begin(ctx);
 
-    // Preserve the HW1 windows, with visibility controlled by a checkbox.
     if (g_show_hw1_tools) {
       if (mu_begin_window(ctx, "Widgets", mu_rect(20, 20, 360, 540))) {
         int w1[] = {-1};
@@ -569,7 +633,6 @@ int main() {
 
         mu_layout_row(ctx, 1, w1, 0);
         mu_label(ctx, "HW1 Part 5: pattern controls");
-
         mu_layout_row(ctx, 1, w1, 0);
         mu_label(ctx, "Red strength:");
         mu_slider(ctx, &g_red_strength, 0.2f, 2.0f);
@@ -680,7 +743,6 @@ int main() {
       }
     }
 
-    // A right-hand column leaves the complete wireframe visible.
     if (mu_begin_window(ctx, "HW2 Mesh Info",
                         mu_rect(790, 335, 200, 345))) {
       int widths[] = {-1};
@@ -710,6 +772,8 @@ int main() {
       mu_checkbox(ctx, "Pattern background", &g_show_pattern_background);
       mu_layout_row(ctx, 1, widths, 0);
       mu_checkbox(ctx, "Show HW1 tools", &g_show_hw1_tools);
+      mu_layout_row(ctx, 1, widths, 0);
+      mu_checkbox(ctx, "Show transforms", &g_show_transforms);
 
       mu_layout_row(ctx, 1, widths, 0);
       mu_text(ctx, "Orthographic: use X,Y and drop Z.");
@@ -743,7 +807,18 @@ int main() {
       mu_end_window(ctx);
     }
 
+    // Hide transformation controls when displaying the original HW1 tools.
+    if (g_show_transforms && !g_show_hw1_tools) {
+      transformation_window(ctx, "Local Transformations",
+                            mu_rect(20, 420, 370, 260),
+                            g_local_transform);
+      transformation_window(ctx, "World Transformations",
+                            mu_rect(405, 420, 370, 260),
+                            g_world_transform);
+    }
+
     mu_end(ctx);
+
     if (quit_requested)
       break;
 
