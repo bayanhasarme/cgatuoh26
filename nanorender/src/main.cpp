@@ -10,6 +10,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -44,9 +45,66 @@ static const char *g_mesh_path = "models/hw2_test.obj";
 static bool g_mesh_loaded = false;
 static std::string g_mesh_error;
 
+// HW2 Part 2: bounding box and temporary viewport transformation.
+// Keep the original vertices unchanged.
+struct ViewportFit {
+  glm::vec3 minimum{0.0f};
+  glm::vec3 maximum{0.0f};
+  glm::vec3 center{0.0f};
+  glm::vec3 translation{0.0f};
+  float scale = 1.0f;
+  std::vector<glm::vec3> fitted_vertices;
+};
+
+static ViewportFit g_fit;
+
+static void calculate_viewport_fit(const Mesh &mesh) {
+  g_fit = ViewportFit{};
+
+  if (mesh.vertices.empty())
+    return;
+
+  g_fit.minimum = mesh.vertices.front();
+  g_fit.maximum = mesh.vertices.front();
+
+  for (const glm::vec3 &vertex : mesh.vertices) {
+    g_fit.minimum = glm::min(g_fit.minimum, vertex);
+    g_fit.maximum = glm::max(g_fit.maximum, vertex);
+  }
+
+  g_fit.center = (g_fit.minimum + g_fit.maximum) * 0.5f;
+  const glm::vec3 extent = g_fit.maximum - g_fit.minimum;
+
+  const float largest_extent =
+      glm::max(extent.x, glm::max(extent.y, extent.z));
+
+  // Use 80% of the smaller window dimension.
+  // The same scale is used for all three axes.
+  const float available_size =
+      0.8f * glm::min(float(WIDTH), float(HEIGHT));
+
+  // A mesh whose vertices all coincide must not cause division by zero.
+  g_fit.scale =
+      largest_extent > 0.0f ? available_size / largest_extent : 1.0f;
+
+  const glm::vec3 screen_center(
+      WIDTH * 0.5f, HEIGHT * 0.5f, 0.0f);
+
+  // p_fitted = scale * p + translation
+  //          = scale * (p - model_center) + screen_center
+  g_fit.translation = screen_center - g_fit.scale * g_fit.center;
+
+  g_fit.fitted_vertices.reserve(mesh.vertices.size());
+
+  for (const glm::vec3 &vertex : mesh.vertices) {
+    g_fit.fitted_vertices.push_back(
+        g_fit.scale * vertex + g_fit.translation);
+  }
+}
+
 // OBJ indices start at 1.
 // Negative indices count backwards from the vertices read so far.
-// Tokens such as "1/2/3" and "1//3" use the first number as the vertex index.
+// For "1/2/3" or "1//3", only the vertex index is used.
 static bool parse_obj_index(const std::string &token, size_t vertex_count,
                             size_t &index) {
   const std::string number = token.substr(0, token.find('/'));
@@ -95,7 +153,6 @@ static bool load_obj(const char *path, Mesh &mesh, std::string &error) {
   while (std::getline(file, line)) {
     ++line_number;
 
-    // Remove comments, including comments at the end of a data line.
     const size_t comment = line.find('#');
     if (comment != std::string::npos)
       line.erase(comment);
@@ -139,7 +196,7 @@ static bool load_obj(const char *path, Mesh &mesh, std::string &error) {
       loaded.faces.push_back(face);
     }
 
-    // Other OBJ records, such as vt, vn and material names, are ignored.
+    // Other OBJ records are ignored.
   }
 
   if (file.bad()) {
@@ -158,11 +215,31 @@ static bool load_obj(const char *path, Mesh &mesh, std::string &error) {
 
 static void reload_mesh() {
   g_mesh_loaded = load_obj(g_mesh_path, g_mesh, g_mesh_error);
+  g_fit = ViewportFit{};
 
   if (g_mesh_loaded) {
     printf("HW2 Part 1: loaded %s\n", g_mesh_path);
     printf("Vertices: %zu\n", g_mesh.vertices.size());
     printf("Faces: %zu\n", g_mesh.faces.size());
+
+    calculate_viewport_fit(g_mesh);
+
+    printf("HW2 Part 2: bounding box and viewport fit\n");
+    printf("Minimum: (%.2f, %.2f, %.2f)\n",
+           g_fit.minimum.x, g_fit.minimum.y, g_fit.minimum.z);
+    printf("Maximum: (%.2f, %.2f, %.2f)\n",
+           g_fit.maximum.x, g_fit.maximum.y, g_fit.maximum.z);
+    printf("Center: (%.2f, %.2f, %.2f)\n",
+           g_fit.center.x, g_fit.center.y, g_fit.center.z);
+    printf("Uniform scale: %.2f\n", g_fit.scale);
+    printf("Translation: (%.2f, %.2f, %.2f)\n",
+           g_fit.translation.x, g_fit.translation.y, g_fit.translation.z);
+
+    for (size_t i = 0; i < g_fit.fitted_vertices.size(); ++i) {
+      const glm::vec3 &vertex = g_fit.fitted_vertices[i];
+      printf("Fitted vertex %zu: (%.2f, %.2f, %.2f)\n",
+             i + 1, vertex.x, vertex.y, vertex.z);
+    }
   } else {
     printf("HW2 Part 1: %s\n", g_mesh_error.c_str());
   }
@@ -230,6 +307,8 @@ static int point_inside_ui(int x, int y) {
     return 1;
   if (point_inside_rect(x, y, 395, 565, 380, 125))
     return 1;
+  if (point_inside_rect(x, y, 790, 20, 200, 300))
+    return 1;
   return 0;
 }
 
@@ -276,11 +355,8 @@ static void draw_line_bresenham(int x0, int y0, int x1, int y1,
 }
 
 static void handle_line_drawing(mu_Context *ctx) {
-  int mouse_x = ctx->mouse_pos.x;
-  int mouse_y = ctx->mouse_pos.y;
-
-  mouse_x = clamp_int(mouse_x, 0, WIDTH - 1);
-  mouse_y = clamp_int(mouse_y, 0, HEIGHT - 1);
+  int mouse_x = clamp_int(ctx->mouse_pos.x, 0, WIDTH - 1);
+  int mouse_y = clamp_int(ctx->mouse_pos.y, 0, HEIGHT - 1);
 
   int left_down = (ctx->mouse_down & MU_MOUSE_LEFT) != 0;
   int mouse_over_ui = point_inside_ui(mouse_x, mouse_y);
@@ -307,20 +383,32 @@ static void handle_line_drawing(mu_Context *ctx) {
       g_lines[g_line_count].color = current_line_color();
       g_line_count++;
     }
-
     g_is_drawing = 0;
   }
 
   g_prev_left_down = left_down;
 }
 
+// Display a compact XYZ value in the bounding-box window.
+static void fit_vector_label(mu_Context *ctx, const char *name,
+                             const glm::vec3 &value) {
+  int widths[] = {-1};
+  char text[96];
+
+  mu_layout_row(ctx, 1, widths, 0);
+  mu_label(ctx, name);
+
+  snprintf(text, sizeof(text), "(%.1f, %.1f, %.1f)",
+           value.x, value.y, value.z);
+  mu_layout_row(ctx, 1, widths, 0);
+  mu_text(ctx, text);
+}
+
 int main() {
   // HW2 Part 0: demonstrate a GLM translation.
   const glm::vec4 point(1.0f, 2.0f, 3.0f, 1.0f);
-
   const glm::mat4 translation = glm::translate(
       glm::mat4(1.0f), glm::vec3(10.0f, 20.0f, 30.0f));
-
   const glm::vec4 result = translation * point;
 
   printf("HW2 Part 0: GLM translation example\n");
@@ -330,7 +418,6 @@ int main() {
          result.x, result.y, result.z);
   fflush(stdout);
 
-  // HW2 Part 1: load the mesh once at startup.
   reload_mesh();
 
   struct mfb_window *window =
@@ -341,7 +428,6 @@ int main() {
   mu_Context *ctx = (mu_Context *)malloc(sizeof(mu_Context));
   mu_init(ctx);
 
-  // Set font callbacks for microui.
   ctx->text_width = [](mu_Font font, const char *str, int len) {
     return (len < 0 ? (int)strlen(str) : len) * 8;
   };
@@ -349,12 +435,10 @@ int main() {
 
   UIRenderer renderer(WIDTH, HEIGHT);
 
-  // Set up char input callback for textbox input.
   mfb_set_char_input_callback(
       [](struct mfb_window *w, unsigned int c) {
         extern void ui_bridge_char_input(struct mfb_window *, unsigned int);
 
-        // HW1 Part 3: press P to toggle the background pattern.
         if (c == 'p' || c == 'P') {
           g_pattern_mode = 1 - g_pattern_mode;
           printf("HW1 Part 3: pattern mode = %d\n", g_pattern_mode);
@@ -374,7 +458,6 @@ int main() {
     for (int i = 0; i < WIDTH * HEIGHT; i++) {
       int x = i % WIDTH;
       int y = i / WIDTH;
-
       int cx = x - WIDTH / 2;
       int cy = y - HEIGHT / 2;
 
@@ -413,7 +496,6 @@ int main() {
         b = (uint8_t)blue_value;
       } else {
         int diagonal = ((x + y) / 45) % 2;
-
         int red_value =
             (int)((diagonal ? 230 : (dist_pattern + 40) % 256) *
                   g_red_strength);
@@ -443,7 +525,6 @@ int main() {
       g_buffer[i] = MFB_RGB(r, g, b);
     }
 
-    // HW1 Part 6: draw saved lines.
     for (int i = 0; i < g_line_count; i++) {
       draw_line_bresenham(g_lines[i].x0, g_lines[i].y0, g_lines[i].x1,
                           g_lines[i].y1, g_lines[i].color);
@@ -465,7 +546,6 @@ int main() {
 
     mu_begin(ctx);
 
-    // --- Widgets window ---
     if (mu_begin_window(ctx, "Widgets", mu_rect(20, 20, 360, 540))) {
       int w1[] = {-1};
 
@@ -554,26 +634,27 @@ int main() {
       mu_end_window(ctx);
     }
 
-    // --- Panel window ---
     if (mu_begin_window(ctx, "Panel Demo", mu_rect(395, 20, 380, 200))) {
       int w2[] = {-1};
       mu_layout_row(ctx, 1, w2, 120);
       mu_begin_panel(ctx, "scrollable panel");
       int wp[] = {-1};
+
       for (int i = 1; i <= 12; i++) {
         mu_layout_row(ctx, 1, wp, 0);
         char line[32];
         snprintf(line, sizeof(line), "Panel row %d", i);
         mu_label(ctx, line);
       }
+
       mu_end_panel(ctx);
       mu_end_window(ctx);
     }
 
-    // --- Popup demo window ---
     if (mu_begin_window(ctx, "Popup Demo", mu_rect(395, 235, 380, 80))) {
       int w3[] = {-1};
       mu_layout_row(ctx, 1, w3, 0);
+
       if (mu_button(ctx, "Open popup")) {
         mu_Container *popup = mu_get_container(ctx, "my popup");
         popup->rect = mu_rect(ctx->mouse_pos.x, ctx->mouse_pos.y, 260, 84);
@@ -594,10 +675,10 @@ int main() {
           mu_get_current_container(ctx)->open = 0;
         mu_end_window(ctx);
       }
+
       mu_end_window(ctx);
     }
 
-    // --- HW1 Part 6: line drawing tools ---
     if (mu_begin_window(ctx, "Line Drawing", mu_rect(395, 330, 380, 220))) {
       int w4[] = {-1};
 
@@ -628,7 +709,6 @@ int main() {
       mu_end_window(ctx);
     }
 
-    // --- HW2 Part 1: mesh inspection ---
     if (mu_begin_window(ctx, "HW2 Mesh Info",
                         mu_rect(395, 565, 380, 125))) {
       int widths[] = {-1};
@@ -653,15 +733,40 @@ int main() {
       mu_end_window(ctx);
     }
 
+    // HW2 Part 2: inspect the computed transformation.
+    if (mu_begin_window(ctx, "HW2 Bounding Box",
+                        mu_rect(790, 20, 200, 300))) {
+      int widths[] = {-1};
+
+      if (g_mesh_loaded) {
+        fit_vector_label(ctx, "Minimum XYZ:", g_fit.minimum);
+        fit_vector_label(ctx, "Maximum XYZ:", g_fit.maximum);
+        fit_vector_label(ctx, "Model center:", g_fit.center);
+
+        char text[64];
+        snprintf(text, sizeof(text), "Scale: %.2f", g_fit.scale);
+        mu_layout_row(ctx, 1, widths, 0);
+        mu_label(ctx, text);
+
+        fit_vector_label(ctx, "Translation XYZ:", g_fit.translation);
+
+        mu_layout_row(ctx, 1, widths, 0);
+        mu_text(ctx, "Fit uses 80% of the smaller window dimension.");
+      } else {
+        mu_layout_row(ctx, 1, widths, 0);
+        mu_label(ctx, "No mesh loaded.");
+      }
+
+      mu_end_window(ctx);
+    }
+
     mu_end(ctx);
 
     if (quit_requested)
       break;
 
-    // 4. UI Rendering.
     renderer.render(ctx, g_buffer);
 
-    // 5. Display.
     mfb_update_state state = mfb_update_ex(window, g_buffer, WIDTH, HEIGHT);
     if (state < 0)
       break;
