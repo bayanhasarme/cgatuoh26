@@ -56,6 +56,9 @@ static int g_show_wireframe = 1;
 // HW4 Part 1: filled screen-space rectangles, one per projected face.
 static int g_show_triangle_boxes = 0;
 
+// HW4 Part 2: barycentric filling, without depth testing.
+static int g_fill_triangles = 1;
+
 static int g_show_transforms = 1;
 
 static int g_enable_arrow_controls = 1;
@@ -1117,6 +1120,64 @@ static void draw_triangle_bounding_rectangle(
       g_buffer[y * WIDTH + x] = color;
 }
 
+// Twice the signed area of triangle (a, b, p).
+static double triangle_edge(const glm::vec2 &a, const glm::vec2 &b,
+                            const glm::vec2 &p) {
+  return (double(b.x) - a.x) * (double(p.y) - a.y) -
+         (double(b.y) - a.y) * (double(p.x) - a.x);
+}
+
+static void fill_screen_triangle(const glm::vec2 &a, const glm::vec2 &b,
+                                 const glm::vec2 &c, uint32_t color) {
+  const double area = triangle_edge(a, b, c);
+  if (!std::isfinite(area) || std::fabs(area) < 1e-8) return;
+  const glm::vec2 minimum = glm::min(a, glm::min(b, c));
+  const glm::vec2 maximum = glm::max(a, glm::max(b, c));
+  const int min_x = clamp_int(int(std::floor(minimum.x)),
+                              VIEW_X, VIEW_X + VIEW_WIDTH - 1);
+  const int max_x = clamp_int(int(std::ceil(maximum.x)),
+                              VIEW_X, VIEW_X + VIEW_WIDTH - 1);
+  const int min_y = clamp_int(int(std::floor(minimum.y)),
+                              VIEW_Y, VIEW_Y + VIEW_HEIGHT - 1);
+  const int max_y = clamp_int(int(std::ceil(maximum.y)),
+                              VIEW_Y, VIEW_Y + VIEW_HEIGHT - 1);
+  for (int y = min_y; y <= max_y; ++y) {
+    for (int x = min_x; x <= max_x; ++x) {
+      // Sample at the center of each pixel, keeping projected floats.
+      const glm::vec2 pixel(x + 0.5f, y + 0.5f);
+      const double alpha = triangle_edge(b, c, pixel) / area;
+      const double beta = triangle_edge(c, a, pixel) / area;
+      const double gamma = triangle_edge(a, b, pixel) / area;
+      // Division by signed area makes the test work for either winding.
+      if (alpha >= 0.0 && alpha <= 1.0 &&
+          beta >= 0.0 && beta <= 1.0 &&
+          gamma >= 0.0 && gamma <= 1.0)
+        g_buffer[y * WIDTH + x] = color;
+    }
+  }
+}
+
+static void draw_filled_triangle(const glm::vec3 &a, const glm::vec3 &b,
+                                 const glm::vec3 &c, uint32_t color) {
+  const glm::mat4 pv = g_projection_matrix * g_view_matrix;
+  const auto polygon = clip_triangle_polygon(
+      pv * glm::vec4(a, 1), pv * glm::vec4(b, 1), pv * glm::vec4(c, 1));
+  if (polygon.size() < 3) return;
+  std::vector<glm::vec2> screen;
+  screen.reserve(polygon.size());
+  for (const glm::vec4 &clip : polygon) {
+    if (!finite_clip_point(clip) || clip.w <= 0.000001f) return;
+    const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+    screen.emplace_back(
+        VIEW_X + (ndc.x + 1.0f) * 0.5f * VIEW_WIDTH,
+        VIEW_Y + (ndc.y + 1.0f) * 0.5f * VIEW_HEIGHT);
+  }
+  // Frustum clipping can produce a polygon: triangulate it as a fan.
+  // All pieces retain the original face's stable color.
+  for (size_t i = 1; i + 1 < screen.size(); ++i)
+    fill_screen_triangle(screen[0], screen[i], screen[i + 1], color);
+}
+
 // Axes use the same matrix as their frame: identity for world, M for local.
 
 static void draw_coordinate_axes(const glm::mat4 &frame, float length) {
@@ -1188,7 +1249,18 @@ static void draw_mesh_wireframe() {
     }
   }
 
-  if (g_show_wireframe && !g_show_triangle_boxes) {
+  else if (g_fill_triangles) {
+    for (size_t i = 0; i < g_mesh.faces.size(); ++i) {
+      const Face &face = g_mesh.faces[i];
+      draw_filled_triangle(
+          transform_point(g_mesh.vertices[face.indices[0]]),
+          transform_point(g_mesh.vertices[face.indices[1]]),
+          transform_point(g_mesh.vertices[face.indices[2]]),
+          g_mesh.face_colors[i]);
+    }
+  }
+
+  if (g_show_wireframe && !g_show_triangle_boxes && !g_fill_triangles) {
 
     const uint32_t white = MFB_RGB(255, 255, 255);
 
@@ -2124,6 +2196,8 @@ int main() {
 
         mu_layout_row(ctx, 1, widths, 0);
 
+        mu_checkbox(ctx, "Fill triangles", &g_fill_triangles);
+        mu_layout_row(ctx, 1, widths, 0);
         mu_checkbox(ctx, "Triangle boxes", &g_show_triangle_boxes);
         mu_layout_row(ctx, 1, widths, 0);
         mu_checkbox(ctx, "Local axes", &g_show_local_axes);
