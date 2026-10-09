@@ -127,32 +127,55 @@ struct Camera {
 };
 
 // HW5 Part 1: RGB values are linear intensities in the range [0, 1].
+
 struct PointLight {
+
   glm::vec3 position{2.0f, 2.0f, 4.0f};
-  glm::vec3 ambient{0.6f, 0.6f, 0.6f};
+
+  glm::vec3 ambient{0.2f, 0.2f, 0.2f};
+
   glm::vec3 diffuse{1.0f};
+
   glm::vec3 specular{1.0f};
+
 };
 
 struct Material {
+
   glm::vec3 ambient{0.8f, 0.4f, 0.2f};
+
   glm::vec3 diffuse{0.8f, 0.4f, 0.2f};
+
   glm::vec3 specular{1.0f};
+
   float shininess = 32.0f;
+
 };
 
 static PointLight g_light;
+
 static Material g_material;
+
 static int g_show_lighting_controls = 1;
+
 static int g_enable_ambient_lighting = 1;
 
+static int g_enable_diffuse_lighting = 1;
+
 static uint32_t ambient_face_color() {
+
   // Component-wise multiplication: Ia.rgb * Ka.rgb.
+
   const glm::vec3 color = glm::clamp(g_light.ambient * g_material.ambient,
+
                                     glm::vec3(0.0f), glm::vec3(1.0f));
+
   return MFB_RGB(int(std::lround(color.r * 255.0f)),
+
                  int(std::lround(color.g * 255.0f)),
+
                  int(std::lround(color.b * 255.0f)));
+
 }
 
 static Camera g_camera;
@@ -631,6 +654,23 @@ static glm::vec3 safe_unit_vector(const glm::vec3 &v) {
 
   return v / length;
 
+}
+
+// HW5 Part 2: all lighting vectors and positions are in world space.
+// Evaluate once per ORIGINAL face, so every rasterized pixel shares its color.
+static uint32_t flat_face_color(const glm::vec3 &world_center,
+                                const glm::vec3 &world_normal) {
+  if (!g_enable_diffuse_lighting) return ambient_face_color();
+  const glm::vec3 normal = safe_unit_vector(world_normal);
+  const glm::vec3 light_direction = safe_unit_vector(g_light.position - world_center);
+  const float lambert = glm::max(glm::dot(normal, light_direction), 0.0f);
+  const glm::vec3 ambient = g_light.ambient * g_material.ambient;
+  const glm::vec3 diffuse = g_light.diffuse * g_material.diffuse * lambert;
+  const glm::vec3 color = glm::clamp(ambient + diffuse,
+                                    glm::vec3(0.0f), glm::vec3(1.0f));
+  return MFB_RGB(int(std::lround(color.r * 255.0f)),
+                 int(std::lround(color.g * 255.0f)),
+                 int(std::lround(color.b * 255.0f)));
 }
 
 static void calculate_normals(Mesh &mesh) {
@@ -1495,6 +1535,14 @@ static void draw_mesh_wireframe() {
 
   else if (g_fill_triangles) {
 
+    // Inverse transpose preserves perpendicularity under nonuniform scaling.
+    const glm::mat3 linear(model);
+    const float determinant = glm::determinant(linear);
+    const glm::mat3 normal_matrix =
+        (std::isfinite(determinant) && std::fabs(determinant) > 1e-12f)
+        ? glm::transpose(glm::inverse(linear)) : glm::mat3(0.0f);
+
+
     for (size_t i = 0; i < g_mesh.faces.size(); ++i) {
 
       const Face &face = g_mesh.faces[i];
@@ -1507,7 +1555,10 @@ static void draw_mesh_wireframe() {
 
           transform_point(g_mesh.vertices[face.indices[2]]),
 
-          g_enable_ambient_lighting ? ambient_face_color() : g_mesh.face_colors[i]);
+          g_enable_ambient_lighting
+              ? flat_face_color(transform_point(g_mesh.face_centers[i]),
+                                normal_matrix * g_mesh.face_normals[i])
+              : g_mesh.face_colors[i]);
 
     }
 
@@ -1820,41 +1871,78 @@ static void transformation_window(mu_Context *ctx, const char *title,
 }
 
 // Compact rows fit in the existing 370 x 260 lower-left control panel.
+
 static void lighting_vector_row(mu_Context *ctx, const char *label,
+
                                 glm::vec3 &value, float minimum, float maximum) {
+
   int widths[] = {98, 78, 78, -1};
+
   mu_layout_row(ctx, 4, widths, 0);
+
   mu_label(ctx, label);
+
   mu_slider(ctx, &value.x, minimum, maximum);
+
   mu_slider(ctx, &value.y, minimum, maximum);
+
   mu_slider(ctx, &value.z, minimum, maximum);
+
 }
 
 static void lighting_window(mu_Context *ctx) {
+
   const int options = MU_OPT_NORESIZE | MU_OPT_NOCLOSE | MU_OPT_NOTITLE;
+
   if (mu_begin_window_ex(ctx, "HW5 Lighting", mu_rect(20, 420, 370, 260), options)) {
+
     int full_width[] = {-1};
+
     mu_layout_row(ctx, 1, full_width, 0);
-    mu_label(ctx, "HW5 Part 1: Ambient lighting");
+
+    mu_label(ctx, "HW5 Part 2: Flat shading");
+
     mu_layout_row(ctx, 1, full_width, 0);
-    mu_checkbox(ctx, "Ambient lighting (off: HW4 colors)", &g_enable_ambient_lighting);
+
+    mu_checkbox(ctx, "Lighting (off: HW4 colors)", &g_enable_ambient_lighting);
+
     lighting_vector_row(ctx, "Position XYZ", g_light.position, -10.0f, 10.0f);
+
     mu_layout_row(ctx, 1, full_width, 0);
-    mu_label(ctx, "Color sliders: Red / Green / Blue");
+
+    if (mu_button(ctx, g_enable_diffuse_lighting
+                      ? "Mode: Ambient + Diffuse" : "Mode: Ambient only"))
+      g_enable_diffuse_lighting = !g_enable_diffuse_lighting;
+
     lighting_vector_row(ctx, "Light ambient", g_light.ambient, 0.0f, 1.0f);
+
     lighting_vector_row(ctx, "Light diffuse", g_light.diffuse, 0.0f, 1.0f);
+
     lighting_vector_row(ctx, "Light specular", g_light.specular, 0.0f, 1.0f);
+
     lighting_vector_row(ctx, "Mat. ambient", g_material.ambient, 0.0f, 1.0f);
+
     mu_layout_row(ctx, 1, full_width, 0);
+
     if (mu_button(ctx, "Reset light and material")) {
+
       g_light = PointLight{};
+
       g_material = Material{};
+
       g_enable_ambient_lighting = 1;
+      g_enable_diffuse_lighting = 1;
+
     }
+
     mu_layout_row(ctx, 1, full_width, 0);
-    mu_label(ctx, "Only Ambient affects the color in Part 1.");
+
+    mu_label(ctx, "Colors: R/G/B. Specular starts in Part 3.");
+
     mu_end_window(ctx);
+
   }
+
 }
 
 static void camera_window(mu_Context *ctx) {
@@ -2446,6 +2534,7 @@ int main() {
       mu_checkbox(ctx, "Camera controls", &g_show_camera_controls);
 
       mu_layout_row(ctx, 1, widths, 0);
+
       mu_checkbox(ctx, "Lighting controls", &g_show_lighting_controls);
 
       mu_layout_row(ctx, 1, widths, 0);
@@ -2521,10 +2610,15 @@ int main() {
     if (g_show_transforms && !g_show_hw1_tools) {
 
       if (g_show_lighting_controls)
+
         lighting_window(ctx);
+
       else
+
         transformation_window(ctx, "Local Transformations",
+
                               mu_rect(20, 420, 370, 260),
+
                               g_local_transform, true);
 
       // Share the lower-right panel; the checkbox selects its controls.
