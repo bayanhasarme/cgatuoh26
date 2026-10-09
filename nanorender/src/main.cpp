@@ -13,6 +13,7 @@
 #include <cmath>
 
 #include <fstream>
+#include <random>
 
 #include <sstream>
 
@@ -52,6 +53,9 @@ static int g_show_pattern_background = 0;
 
 static int g_show_wireframe = 1;
 
+// HW4 Part 1: filled screen-space rectangles, one per projected face.
+static int g_show_triangle_boxes = 0;
+
 static int g_show_transforms = 1;
 
 static int g_enable_arrow_controls = 1;
@@ -65,7 +69,9 @@ static int g_show_world_axes = 1;
 static int g_show_bounding_box = 1;
 
 // HW3 Part 4: cyan face normals, magenta vertex normals.
+
 static int g_show_face_normals = 1;
+
 static int g_show_vertex_normals = 1;
 
 static constexpr int VIEW_X = 20;
@@ -302,8 +308,12 @@ struct Mesh {
 
   std::vector<Face> faces;
 
+  std::vector<uint32_t> face_colors;
+
   std::vector<glm::vec3> face_normals;
+
   std::vector<glm::vec3> face_centers;
+
   std::vector<glm::vec3> vertex_normals;
 
 };
@@ -563,32 +573,57 @@ static bool load_obj(const char *path, Mesh &mesh, std::string &error) {
 }
 
 // A degenerate triangle or cancelled sum has no defined unit normal.
+
 static glm::vec3 safe_unit_vector(const glm::vec3 &v) {
+
   const float length = glm::length(v);
+
   if (!std::isfinite(length) || length <= 0.0f)
+
     return glm::vec3(0.0f);
+
   return v / length;
+
 }
 
 static void calculate_normals(Mesh &mesh) {
+
   mesh.face_normals.assign(mesh.faces.size(), glm::vec3(0.0f));
+
   mesh.face_centers.resize(mesh.faces.size());
+
   mesh.vertex_normals.assign(mesh.vertices.size(), glm::vec3(0.0f));
+
   for (size_t i = 0; i < mesh.faces.size(); ++i) {
+
     const Face &face = mesh.faces[i];
+
     const glm::vec3 &a = mesh.vertices[face.indices[0]];
+
     const glm::vec3 &b = mesh.vertices[face.indices[1]];
+
     const glm::vec3 &c = mesh.vertices[face.indices[2]];
+
     const glm::vec3 normal = safe_unit_vector(glm::cross(b - a, c - a));
+
     mesh.face_normals[i] = normal;
+
     mesh.face_centers[i] = (a + b + c) / 3.0f;
+
     // Equal weight for each adjacent triangle. Normalizing the sum gives
+
     // the same direction as normalizing the arithmetic average.
+
     for (size_t index : face.indices)
+
       mesh.vertex_normals[index] += normal;
+
   }
+
   for (glm::vec3 &normal : mesh.vertex_normals)
+
     normal = safe_unit_vector(normal);
+
 }
 
 static void reload_mesh() {
@@ -606,8 +641,23 @@ static void reload_mesh() {
     printf("Faces: %zu\n", g_mesh.faces.size());
 
     calculate_viewport_fit(g_mesh);
+
     calculate_normals(g_mesh);
+
+    // Assign once per load, not once per frame: colors never flicker.
+    // Fixed seed makes screenshots reproducible across runs.
+    std::mt19937 generator(42);
+    std::uniform_int_distribution<int> channel(70, 240);
+    g_mesh.face_colors.resize(g_mesh.faces.size());
+    for (uint32_t &color : g_mesh.face_colors) {
+      const int red = channel(generator);
+      const int green = channel(generator);
+      const int blue = channel(generator);
+      color = MFB_RGB(red, green, blue);
+    }
+
     printf("HW3 Part 4: calculated %zu face normals and %zu vertex normals\n",
+
            g_mesh.face_normals.size(), g_mesh.vertex_normals.size());
 
     printf("HW2 Part 2: bounding box and viewport fit\n");
@@ -1004,6 +1054,69 @@ static void draw_world_segment(const glm::vec3 &a, const glm::vec3 &b,
 
 }
 
+// Clip the triangle as a polygon before dividing by W. A triangle crossing
+// the near plane can still contribute a visible screen-space rectangle.
+static std::vector<glm::vec4> clip_triangle_polygon(
+    const glm::vec4 &a, const glm::vec4 &b, const glm::vec4 &c) {
+  if (!finite_clip_point(a) || !finite_clip_point(b) || !finite_clip_point(c))
+    return {};
+  std::vector<glm::vec4> polygon{a, b, c};
+  for (int plane = 0; plane < 6 && !polygon.empty(); ++plane) {
+    std::vector<glm::vec4> output;
+    glm::vec4 previous = polygon.back();
+    float previous_distance = clip_plane_distance(previous, plane);
+    for (const glm::vec4 &current : polygon) {
+      const float distance = clip_plane_distance(current, plane);
+      const bool previous_inside = previous_distance >= 0.0f;
+      const bool current_inside = distance >= 0.0f;
+      if (previous_inside != current_inside) {
+        const float t = previous_distance / (previous_distance - distance);
+        output.push_back(previous + t * (current - previous));
+      }
+      if (current_inside) output.push_back(current);
+      previous = current;
+      previous_distance = distance;
+    }
+    polygon = std::move(output);
+  }
+  return polygon;
+}
+
+static void draw_triangle_bounding_rectangle(
+    const glm::vec3 &a, const glm::vec3 &b, const glm::vec3 &c,
+    uint32_t color) {
+  const glm::mat4 pv = g_projection_matrix * g_view_matrix;
+  const auto polygon = clip_triangle_polygon(
+      pv * glm::vec4(a, 1), pv * glm::vec4(b, 1), pv * glm::vec4(c, 1));
+  if (polygon.size() < 3) return;
+
+  glm::vec2 minimum{float(VIEW_X + VIEW_WIDTH), float(VIEW_Y + VIEW_HEIGHT)};
+  glm::vec2 maximum{float(VIEW_X), float(VIEW_Y)};
+  for (const glm::vec4 &clip : polygon) {
+    if (!finite_clip_point(clip) || clip.w <= 0.000001f) return;
+    const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+    const glm::vec2 screen(
+        VIEW_X + (ndc.x + 1.0f) * 0.5f * VIEW_WIDTH,
+        VIEW_Y + (ndc.y + 1.0f) * 0.5f * VIEW_HEIGHT);
+    minimum = glm::min(minimum, screen);
+    maximum = glm::max(maximum, screen);
+  }
+
+  const int min_x = clamp_int(int(std::floor(minimum.x)),
+                              VIEW_X, VIEW_X + VIEW_WIDTH - 1);
+  const int max_x = clamp_int(int(std::ceil(maximum.x)),
+                              VIEW_X, VIEW_X + VIEW_WIDTH - 1);
+  const int min_y = clamp_int(int(std::floor(minimum.y)),
+                              VIEW_Y, VIEW_Y + VIEW_HEIGHT - 1);
+  const int max_y = clamp_int(int(std::ceil(maximum.y)),
+                              VIEW_Y, VIEW_Y + VIEW_HEIGHT - 1);
+  // Exact one-pixel writes; the line brush would expand the rectangle.
+  // Later faces overwrite earlier ones. No triangle test or depth test yet.
+  for (int y = min_y; y <= max_y; ++y)
+    for (int x = min_x; x <= max_x; ++x)
+      g_buffer[y * WIDTH + x] = color;
+}
+
 // Axes use the same matrix as their frame: identity for world, M for local.
 
 static void draw_coordinate_axes(const glm::mat4 &frame, float length) {
@@ -1064,7 +1177,18 @@ static void draw_mesh_wireframe() {
 
   }
 
-  if (g_show_wireframe) {
+  if (g_show_triangle_boxes) {
+    for (size_t i = 0; i < g_mesh.faces.size(); ++i) {
+      const Face &face = g_mesh.faces[i];
+      draw_triangle_bounding_rectangle(
+          transform_point(g_mesh.vertices[face.indices[0]]),
+          transform_point(g_mesh.vertices[face.indices[1]]),
+          transform_point(g_mesh.vertices[face.indices[2]]),
+          g_mesh.face_colors[i]);
+    }
+  }
+
+  if (g_show_wireframe && !g_show_triangle_boxes) {
 
     const uint32_t white = MFB_RGB(255, 255, 255);
 
@@ -1139,34 +1263,63 @@ static void draw_mesh_wireframe() {
     draw_coordinate_axes(model, axis_length);
 
   if (g_show_face_normals || g_show_vertex_normals) {
+
     // Directions require inverse-transpose, especially for nonuniform scale.
+
     // Translation affects the base point only, never the normal direction.
+
     const glm::mat3 linear(model);
+
     const float determinant = glm::determinant(linear);
+
     if (std::isfinite(determinant) && std::fabs(determinant) > 1e-12f) {
+
       const glm::mat3 normal_matrix = glm::transpose(glm::inverse(linear));
+
       const float normal_length = 0.2f * glm::max(extent.x,
+
                                                  glm::max(extent.y, extent.z));
+
       const auto draw_normal = [&](const glm::vec3 &base,
+
                                    const glm::vec3 &normal, uint32_t color) {
+
         const glm::vec3 direction = safe_unit_vector(normal_matrix * normal);
+
         if (glm::dot(direction, direction) == 0.0f) return;
+
         const glm::vec3 world_base = transform_point(base);
+
         draw_world_segment(world_base, world_base + normal_length * direction,
+
                            color);
+
       };
+
       if (g_show_face_normals) {
+
         for (size_t i = 0; i < g_mesh.faces.size(); ++i)
+
           draw_normal(g_mesh.face_centers[i], g_mesh.face_normals[i],
+
                       MFB_RGB(0, 230, 255));
+
       }
+
       if (g_show_vertex_normals) {
+
         for (size_t i = 0; i < g_mesh.vertices.size(); ++i)
+
           draw_normal(g_mesh.vertices[i], g_mesh.vertex_normals[i],
+
                       MFB_RGB(255, 90, 220));
+
       }
+
     }
+
   }
+
   g_clip_mesh_pixels = false;
 
 }
@@ -1948,27 +2101,51 @@ int main() {
       if (g_mesh_loaded) {
 
         // Compact bounds leave room for all five debug toggles.
+
         const auto bounds_row = [&](const char *name, const glm::vec3 &value) {
+
           char text[96];
+
           snprintf(text, sizeof(text), "%s: %.1f %.1f %.1f",
+
                    name, value.x, value.y, value.z);
+
           mu_layout_row(ctx, 1, widths, 0);
+
           mu_text(ctx, text);
+
         };
+
         bounds_row("Min", g_fit.minimum);
+
         bounds_row("Max", g_fit.maximum);
+
         bounds_row("Center", g_fit.center);
+
+        mu_layout_row(ctx, 1, widths, 0);
+
+        mu_checkbox(ctx, "Triangle boxes", &g_show_triangle_boxes);
         mu_layout_row(ctx, 1, widths, 0);
         mu_checkbox(ctx, "Local axes", &g_show_local_axes);
+
         mu_layout_row(ctx, 1, widths, 0);
+
         mu_checkbox(ctx, "World axes", &g_show_world_axes);
+
         mu_layout_row(ctx, 1, widths, 0);
+
         mu_checkbox(ctx, "Bounding box", &g_show_bounding_box);
+
         mu_layout_row(ctx, 1, widths, 0);
+
         mu_checkbox(ctx, "Face normals", &g_show_face_normals);
+
         mu_layout_row(ctx, 1, widths, 0);
+
         mu_checkbox(ctx, "Vertex normals", &g_show_vertex_normals);
+
         mu_layout_row(ctx, 1, widths, 0);
+
         mu_text(ctx, "Face: cyan. Vertex: pink. Axes: RGB.");
 
     } else {
