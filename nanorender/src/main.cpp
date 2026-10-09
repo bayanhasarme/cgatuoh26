@@ -89,14 +89,27 @@ static TransformState g_local_transform;
 static TransformState g_world_transform;
 
 // HW3 Part 2: a camera has a rigid world pose (no scale).
+
 struct Camera {
+
   glm::vec3 position{0.0f, 0.0f, 5.0f};
+
   glm::vec3 rotation{0.0f}; // Degrees; same Rz * Ry * Rx convention.
+
 };
 
 static Camera g_camera;
+
 static int g_show_camera_controls = 1;
+
 static glm::mat4 g_view_matrix(1.0f);
+
+// HW3 Part 3: GLM right-handed projections, OpenGL depth range [-1, 1].
+static int g_use_perspective = 1;
+static float g_fov_degrees = 45.0f;
+static constexpr float NEAR_PLANE = 0.1f;
+static constexpr float FAR_PLANE = 100.0f;
+static glm::mat4 g_projection_matrix(1.0f);
 
 
 // HW2 Part 6: intercept arrow input before ui_bridge_input.
@@ -228,11 +241,17 @@ static glm::mat4 transformation_matrix(const TransformState &state) {
 }
 
 // Invert the entire camera pose: inverse(T * R) = inverse(R) * inverse(T).
+
 // Negating Euler angles in the original order would give the wrong inverse.
+
 static glm::mat4 camera_view_matrix(const Camera &camera) {
+
   const glm::mat4 pose = glm::translate(glm::mat4(1.0f), camera.position) *
+
                          rotation_matrix(camera.rotation);
+
   return glm::inverse(pose);
+
 }
 
 static void set_comparison_demo(bool orbit) {
@@ -785,40 +804,89 @@ static void draw_line_bresenham(int x0, int y0, int x1, int y1,
 
 }
 
-static glm::ivec2 project_orthographic(const glm::vec3 &vertex) {
-
-  return glm::ivec2(
-
-      static_cast<int>(std::lround(vertex.x)),
-
-      static_cast<int>(std::lround(vertex.y)));
-
+// Camera looks along -Z. Use the actual scene viewport aspect ratio.
+static glm::mat4 projection_matrix() {
+  const float aspect = float(VIEW_WIDTH) / float(VIEW_HEIGHT);
+  if (g_use_perspective)
+    return glm::perspectiveRH_NO(glm::radians(g_fov_degrees), aspect,
+                                 NEAR_PLANE, FAR_PLANE);
+  // Match the previous HW2 pixel scale; ortho size is independent of camera Z.
+  const float half_height = float(VIEW_HEIGHT) / g_fit.scale;
+  const float half_width = half_height * aspect;
+  return glm::orthoRH_NO(-half_width, half_width, -half_height, half_height,
+                         NEAR_PLANE, FAR_PLANE);
 }
 
-// Apply View after Model, then use the existing orthographic projection.
+static bool finite_clip_point(const glm::vec4 &p) {
+  return std::isfinite(p.x) && std::isfinite(p.y) &&
+         std::isfinite(p.z) && std::isfinite(p.w);
+}
 
-static glm::ivec2 world_to_screen(const glm::vec3 &point) {
+// Signed distances to the six homogeneous frustum planes (inside >= 0).
+static float clip_plane_distance(const glm::vec4 &p, int plane) {
+  switch (plane) {
+  case 0: return p.w + p.x;
+  case 1: return p.w - p.x;
+  case 2: return p.w + p.y;
+  case 3: return p.w - p.y;
+  case 4: return p.w + p.z;
+  default: return p.w - p.z;
+  }
+}
 
-  const glm::vec3 center(VIEW_X + VIEW_WIDTH * 0.5f,
+// Clip BEFORE dividing by W: even an edge crossing the near plane is valid.
+static bool clip_segment(glm::vec4 &a, glm::vec4 &b) {
+  if (!finite_clip_point(a) || !finite_clip_point(b))
+    return false;
+  float enter = 0.0f, leave = 1.0f;
+  for (int plane = 0; plane < 6; ++plane) {
+    const float da = clip_plane_distance(a, plane);
+    const float db = clip_plane_distance(b, plane);
+    if (da < 0.0f && db < 0.0f)
+      return false;
+    if (da < 0.0f || db < 0.0f) {
+      const float t = da / (da - db);
+      if (da < 0.0f) enter = glm::max(enter, t);
+      else leave = glm::min(leave, t);
+      if (enter > leave) return false;
+    }
+  }
+  const glm::vec4 original = a;
+  const glm::vec4 delta = b - a;
+  a = original + enter * delta;
+  b = original + leave * delta;
+  return a.w > 0.000001f && b.w > 0.000001f;
+}
 
-                         VIEW_Y + VIEW_HEIGHT * 0.5f, 0.0f);
+static glm::ivec2 clip_to_screen(const glm::vec4 &clip) {
+  const glm::vec3 ndc = glm::vec3(clip) / clip.w; // Perspective divide.
+  // Keep the previous assignments' convention: positive Y goes down.
+  return glm::ivec2(
+      int(std::lround(VIEW_X + (glm::clamp(ndc.x, -1.0f, 1.0f) + 1.0f) *
+                              0.5f * VIEW_WIDTH)),
+      int(std::lround(VIEW_Y + (glm::clamp(ndc.y, -1.0f, 1.0f) + 1.0f) *
+                              0.5f * VIEW_HEIGHT)));
+}
 
-  const glm::vec3 camera_point(g_view_matrix * glm::vec4(point, 1.0f));
-  // Orthographic projection still drops Z. Perspective is HW3 Part 3.
-  return project_orthographic(center + g_fit.scale * 0.5f * camera_point);
-
+static bool world_to_screen(const glm::vec3 &point, glm::ivec2 &screen) {
+  const glm::vec4 clip = g_projection_matrix * g_view_matrix * glm::vec4(point, 1);
+  if (!finite_clip_point(clip) || clip.w <= 0.000001f)
+    return false;
+  for (int plane = 0; plane < 6; ++plane)
+    if (clip_plane_distance(clip, plane) < 0.0f) return false;
+  screen = clip_to_screen(clip);
+  return true;
 }
 
 static void draw_world_segment(const glm::vec3 &a, const glm::vec3 &b,
-
                                uint32_t color) {
-
-  const glm::ivec2 pa = world_to_screen(a);
-
-  const glm::ivec2 pb = world_to_screen(b);
-
+  // The endpoints already contain Model; this completes P * V * M * vertex.
+  glm::vec4 ca = g_projection_matrix * g_view_matrix * glm::vec4(a, 1);
+  glm::vec4 cb = g_projection_matrix * g_view_matrix * glm::vec4(b, 1);
+  if (!clip_segment(ca, cb)) return;
+  const glm::ivec2 pa = clip_to_screen(ca);
+  const glm::ivec2 pb = clip_to_screen(cb);
   draw_line_bresenham(pa.x, pa.y, pb.x, pb.y, color);
-
 }
 
 // Axes use the same matrix as their frame: identity for world, M for local.
@@ -864,16 +932,16 @@ static void draw_mesh_wireframe() {
   };
 
   g_view_matrix = camera_view_matrix(g_camera);
+  g_projection_matrix = projection_matrix();
 
   g_clip_mesh_pixels = true;
 
-  const glm::ivec2 origin = world_to_screen(glm::vec3(0));
-
-  const uint32_t orange = MFB_RGB(255, 190, 60);
-
-  draw_line_bresenham(origin.x - 7, origin.y, origin.x + 7, origin.y, orange);
-
-  draw_line_bresenham(origin.x, origin.y - 7, origin.x, origin.y + 7, orange);
+  glm::ivec2 origin;
+  if (world_to_screen(glm::vec3(0), origin)) {
+    const uint32_t orange = MFB_RGB(255, 190, 60);
+    draw_line_bresenham(origin.x - 7, origin.y, origin.x + 7, origin.y, orange);
+    draw_line_bresenham(origin.x, origin.y - 7, origin.x, origin.y + 7, orange);
+  }
 
   if (g_show_wireframe) {
 
@@ -1124,27 +1192,57 @@ static void transformation_window(mu_Context *ctx, const char *title,
 }
 
 static void camera_window(mu_Context *ctx) {
+
   const int options = MU_OPT_NORESIZE | MU_OPT_NOCLOSE | MU_OPT_NOTITLE;
+
   if (mu_begin_window_ex(ctx, "HW3 Camera", mu_rect(405, 420, 370, 260), options)) {
+
     int full_width[] = {-1};
+
     int axis_widths[] = {108, 108, -1};
+
     mu_layout_row(ctx, 1, full_width, 0);
+
     mu_label(ctx, "HW3 Camera (world pose)");
+
     mu_layout_row(ctx, 3, axis_widths, 0);
+
     mu_label(ctx, "X");
+
     mu_label(ctx, "Y");
+
     mu_label(ctx, "Z");
+
     transform_vector_controls(ctx, "Camera position (model units)",
+
                               g_camera.position, -10.0f, 10.0f);
+
     transform_vector_controls(ctx, "Camera rotation (degrees)",
+
                               g_camera.rotation, -180.0f, 180.0f);
+
     mu_layout_row(ctx, 1, full_width, 0);
+
     if (mu_button(ctx, "Reset camera"))
+
       g_camera = Camera{};
+
     mu_layout_row(ctx, 1, full_width, 0);
-    mu_text(ctx, "View = inverse(T * R). Camera left: scene right. Orthographic: Z alone does not change size.");
+
+    if (mu_button(ctx, g_use_perspective ? "Projection: Perspective" :
+                                         "Projection: Orthographic"))
+      g_use_perspective = !g_use_perspective;
+    int fov_widths[] = {110, -1};
+    mu_layout_row(ctx, 2, fov_widths, 0);
+    mu_label(ctx, "FOV (degrees)");
+    mu_slider(ctx, &g_fov_degrees, 20.0f, 100.0f);
+    mu_layout_row(ctx, 1, full_width, 0);
+    mu_label(ctx, "Near: 0.1 / Far: 100");
+
     mu_end_window(ctx);
+
   }
+
 }
 
 int main() {
@@ -1734,11 +1832,17 @@ int main() {
                             g_local_transform, true);
 
       // Share the lower-right panel; the checkbox selects its controls.
+
       if (g_show_camera_controls)
+
         camera_window(ctx);
+
       else
+
         transformation_window(ctx, "World Transformations",
+
                               mu_rect(405, 420, 370, 260),
+
                               g_world_transform, false);
 
     }
