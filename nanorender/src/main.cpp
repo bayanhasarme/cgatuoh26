@@ -14,6 +14,8 @@
 
 #include <fstream>
 #include <random>
+#include <algorithm>
+#include <limits>
 
 #include <sstream>
 
@@ -44,6 +46,11 @@ extern "C" {
 #define MAX_LINES 512
 
 static uint32_t g_buffer[WIDTH * HEIGHT];
+
+// HW4 Part 3: normalized projected depth, smaller is closer.
+static float g_z_buffer[WIDTH * HEIGHT];
+static int g_enable_depth_test = 1;
+static int g_show_depth_map = 0;
 
 static int g_pattern_mode = 0;
 
@@ -1127,12 +1134,13 @@ static double triangle_edge(const glm::vec2 &a, const glm::vec2 &b,
          (double(b.y) - a.y) * (double(p.x) - a.x);
 }
 
-static void fill_screen_triangle(const glm::vec2 &a, const glm::vec2 &b,
-                                 const glm::vec2 &c, uint32_t color) {
-  const double area = triangle_edge(a, b, c);
+static void fill_screen_triangle(const glm::vec3 &a, const glm::vec3 &b,
+                                 const glm::vec3 &c, uint32_t color) {
+  const glm::vec2 pa(a), pb(b), pc(c);
+  const double area = triangle_edge(pa, pb, pc);
   if (!std::isfinite(area) || std::fabs(area) < 1e-8) return;
-  const glm::vec2 minimum = glm::min(a, glm::min(b, c));
-  const glm::vec2 maximum = glm::max(a, glm::max(b, c));
+  const glm::vec2 minimum = glm::min(pa, glm::min(pb, pc));
+  const glm::vec2 maximum = glm::max(pa, glm::max(pb, pc));
   const int min_x = clamp_int(int(std::floor(minimum.x)),
                               VIEW_X, VIEW_X + VIEW_WIDTH - 1);
   const int max_x = clamp_int(int(std::ceil(maximum.x)),
@@ -1145,14 +1153,24 @@ static void fill_screen_triangle(const glm::vec2 &a, const glm::vec2 &b,
     for (int x = min_x; x <= max_x; ++x) {
       // Sample at the center of each pixel, keeping projected floats.
       const glm::vec2 pixel(x + 0.5f, y + 0.5f);
-      const double alpha = triangle_edge(b, c, pixel) / area;
-      const double beta = triangle_edge(c, a, pixel) / area;
-      const double gamma = triangle_edge(a, b, pixel) / area;
+      const double alpha = triangle_edge(pb, pc, pixel) / area;
+      const double beta = triangle_edge(pc, pa, pixel) / area;
+      const double gamma = triangle_edge(pa, pb, pixel) / area;
       // Division by signed area makes the test work for either winding.
       if (alpha >= 0.0 && alpha <= 1.0 &&
           beta >= 0.0 && beta <= 1.0 &&
-          gamma >= 0.0 && gamma <= 1.0)
-        g_buffer[y * WIDTH + x] = color;
+          gamma >= 0.0 && gamma <= 1.0) {
+        // Interpolate z/w after projection, not raw camera-space Z.
+        // NDC depth is affine in screen barycentrics, even in perspective.
+        const float depth = float(alpha * a.z + beta * b.z + gamma * c.z);
+        const int index = y * WIDTH + x;
+        if (!std::isfinite(depth)) continue;
+        // Depth-map mode always needs a nearest-surface buffer.
+        if ((g_enable_depth_test || g_show_depth_map) &&
+            depth >= g_z_buffer[index]) continue;
+        g_z_buffer[index] = depth;
+        g_buffer[index] = color;
+      }
     }
   }
 }
@@ -1163,19 +1181,46 @@ static void draw_filled_triangle(const glm::vec3 &a, const glm::vec3 &b,
   const auto polygon = clip_triangle_polygon(
       pv * glm::vec4(a, 1), pv * glm::vec4(b, 1), pv * glm::vec4(c, 1));
   if (polygon.size() < 3) return;
-  std::vector<glm::vec2> screen;
+  std::vector<glm::vec3> screen;
   screen.reserve(polygon.size());
   for (const glm::vec4 &clip : polygon) {
     if (!finite_clip_point(clip) || clip.w <= 0.000001f) return;
     const glm::vec3 ndc = glm::vec3(clip) / clip.w;
     screen.emplace_back(
         VIEW_X + (ndc.x + 1.0f) * 0.5f * VIEW_WIDTH,
-        VIEW_Y + (ndc.y + 1.0f) * 0.5f * VIEW_HEIGHT);
+        VIEW_Y + (ndc.y + 1.0f) * 0.5f * VIEW_HEIGHT,
+        ndc.z * 0.5f + 0.5f);
   }
   // Frustum clipping can produce a polygon: triangulate it as a fan.
   // All pieces retain the original face's stable color.
   for (size_t i = 1; i + 1 < screen.size(); ++i)
     fill_screen_triangle(screen[0], screen[i], screen[i + 1], color);
+}
+
+// Display the actual stored depths with contrast stretched over visible pixels.
+// Close = bright, far = dark; untouched infinity pixels = black.
+static void visualize_depth_buffer() {
+  float minimum = std::numeric_limits<float>::infinity();
+  float maximum = -std::numeric_limits<float>::infinity();
+  for (int y = VIEW_Y; y < VIEW_Y + VIEW_HEIGHT; ++y)
+    for (int x = VIEW_X; x < VIEW_X + VIEW_WIDTH; ++x) {
+      const float depth = g_z_buffer[y * WIDTH + x];
+      if (!std::isfinite(depth)) continue;
+      minimum = glm::min(minimum, depth);
+      maximum = glm::max(maximum, depth);
+    }
+  const float range = maximum - minimum;
+  for (int y = VIEW_Y; y < VIEW_Y + VIEW_HEIGHT; ++y)
+    for (int x = VIEW_X; x < VIEW_X + VIEW_WIDTH; ++x) {
+      const int index = y * WIDTH + x;
+      const float depth = g_z_buffer[index];
+      int gray = 0;
+      if (std::isfinite(depth)) {
+        const float t = range > 1e-7f ? (depth - minimum) / range : 0.5f;
+        gray = int(std::lround(40.0f + 215.0f * (1.0f - glm::clamp(t, 0.0f, 1.0f))));
+      }
+      g_buffer[index] = MFB_RGB(gray, gray, gray);
+    }
 }
 
 // Axes use the same matrix as their frame: identity for world, M for local.
@@ -2172,30 +2217,11 @@ int main() {
 
       if (g_mesh_loaded) {
 
-        // Compact bounds leave room for all five debug toggles.
-
-        const auto bounds_row = [&](const char *name, const glm::vec3 &value) {
-
-          char text[96];
-
-          snprintf(text, sizeof(text), "%s: %.1f %.1f %.1f",
-
-                   name, value.x, value.y, value.z);
-
-          mu_layout_row(ctx, 1, widths, 0);
-
-          mu_text(ctx, text);
-
-        };
-
-        bounds_row("Min", g_fit.minimum);
-
-        bounds_row("Max", g_fit.maximum);
-
-        bounds_row("Center", g_fit.center);
-
         mu_layout_row(ctx, 1, widths, 0);
-
+        mu_checkbox(ctx, "Depth test", &g_enable_depth_test);
+        mu_layout_row(ctx, 1, widths, 0);
+        mu_checkbox(ctx, "Depth map", &g_show_depth_map);
+        mu_layout_row(ctx, 1, widths, 0);
         mu_checkbox(ctx, "Fill triangles", &g_fill_triangles);
         mu_layout_row(ctx, 1, widths, 0);
         mu_checkbox(ctx, "Triangle boxes", &g_show_triangle_boxes);
@@ -2264,7 +2290,12 @@ int main() {
 
       break;
 
+    // Reset all depths every frame, after UI changes and before rasterization.
+    std::fill_n(g_z_buffer, WIDTH * HEIGHT,
+                std::numeric_limits<float>::infinity());
     draw_mesh_wireframe();
+    if (g_show_depth_map && g_fill_triangles && !g_show_triangle_boxes)
+      visualize_depth_buffer();
 
     renderer.render(ctx, g_buffer);
 
