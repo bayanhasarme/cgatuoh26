@@ -116,7 +116,7 @@ The following screenshots use the same model rotation `(25°, 35°, 0°)`, camer
 Normals are computed whenever the OBJ is loaded or reloaded. For each triangle with vertices A, B, and C, the unit face normal and face center are:
 
 $$
-n_f = \operatorname{normalize}((B-A) \times (C-A)), \qquad c_f = \frac{A+B+C}{3}
+n_f = \mathrm{normalize}((B-A) \times (C-A)), \qquad c_f = \frac{A+B+C}{3}
 $$
 
 The cross-product direction follows the triangle's vertex order. The test pyramid has consistent outward-facing winding.
@@ -124,7 +124,7 @@ The cross-product direction follows the triangle's vertex order. The test pyrami
 Each vertex normal is the normalized sum of the unit normals of its adjacent triangles, giving every triangle equal weight:
 
 $$
-n_v = \operatorname{normalize}\left(\sum_{f\,\text{adjacent to}\,v} n_f\right)
+n_v = \mathrm{normalize}\left(\sum_{f\,\text{adjacent to}\,v} n_f\right)
 $$
 
 Degenerate triangles and zero-length sums are handled without dividing by zero.
@@ -139,7 +139,7 @@ Two independent checkboxes control the debug lines:
 Normal directions are transformed using the inverse transpose of the Model matrix's linear component:
 
 $$
-N = (M_{3\times3}^{-1})^T, \qquad n_{world} = \operatorname{normalize}(N n)
+N = (M_{3\times3}^{-1})^T, \qquad n_{world} = \mathrm{normalize}(N n)
 $$
 
 The line's starting point receives the full Model transformation. Its direction receives the normal matrix, so translation does not affect the direction and nonuniform scaling preserves perpendicularity. Endpoints then pass through View, Projection, clipping, and the viewport mapping.
