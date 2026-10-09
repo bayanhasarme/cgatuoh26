@@ -13,8 +13,11 @@
 #include <cmath>
 
 #include <fstream>
+
 #include <random>
+
 #include <algorithm>
+
 #include <limits>
 
 #include <sstream>
@@ -48,8 +51,11 @@ extern "C" {
 static uint32_t g_buffer[WIDTH * HEIGHT];
 
 // HW4 Part 3: normalized projected depth, smaller is closer.
+
 static float g_z_buffer[WIDTH * HEIGHT];
+
 static int g_enable_depth_test = 1;
+
 static int g_show_depth_map = 0;
 
 static int g_pattern_mode = 0;
@@ -61,9 +67,11 @@ static int g_show_pattern_background = 0;
 static int g_show_wireframe = 1;
 
 // HW4 Part 1: filled screen-space rectangles, one per projected face.
+
 static int g_show_triangle_boxes = 0;
 
 // HW4 Part 2: barycentric filling, without depth testing.
+
 static int g_fill_triangles = 1;
 
 static int g_show_transforms = 1;
@@ -72,17 +80,17 @@ static int g_enable_arrow_controls = 1;
 
 // HW3 Part 1 debug geometry.
 
-static int g_show_local_axes = 1;
+static int g_show_local_axes = 0;
 
-static int g_show_world_axes = 1;
+static int g_show_world_axes = 0;
 
-static int g_show_bounding_box = 1;
+static int g_show_bounding_box = 0;
 
 // HW3 Part 4: cyan face normals, magenta vertex normals.
 
-static int g_show_face_normals = 1;
+static int g_show_face_normals = 0;
 
-static int g_show_vertex_normals = 1;
+static int g_show_vertex_normals = 0;
 
 static constexpr int VIEW_X = 20;
 
@@ -117,6 +125,35 @@ struct Camera {
   glm::vec3 rotation{0.0f}; // Degrees; same Rz * Ry * Rx convention.
 
 };
+
+// HW5 Part 1: RGB values are linear intensities in the range [0, 1].
+struct PointLight {
+  glm::vec3 position{2.0f, 2.0f, 4.0f};
+  glm::vec3 ambient{0.6f, 0.6f, 0.6f};
+  glm::vec3 diffuse{1.0f};
+  glm::vec3 specular{1.0f};
+};
+
+struct Material {
+  glm::vec3 ambient{0.8f, 0.4f, 0.2f};
+  glm::vec3 diffuse{0.8f, 0.4f, 0.2f};
+  glm::vec3 specular{1.0f};
+  float shininess = 32.0f;
+};
+
+static PointLight g_light;
+static Material g_material;
+static int g_show_lighting_controls = 1;
+static int g_enable_ambient_lighting = 1;
+
+static uint32_t ambient_face_color() {
+  // Component-wise multiplication: Ia.rgb * Ka.rgb.
+  const glm::vec3 color = glm::clamp(g_light.ambient * g_material.ambient,
+                                    glm::vec3(0.0f), glm::vec3(1.0f));
+  return MFB_RGB(int(std::lround(color.r * 255.0f)),
+                 int(std::lround(color.g * 255.0f)),
+                 int(std::lround(color.b * 255.0f)));
+}
 
 static Camera g_camera;
 
@@ -655,15 +692,25 @@ static void reload_mesh() {
     calculate_normals(g_mesh);
 
     // Assign once per load, not once per frame: colors never flicker.
+
     // Fixed seed makes screenshots reproducible across runs.
+
     std::mt19937 generator(42);
+
     std::uniform_int_distribution<int> channel(70, 240);
+
     g_mesh.face_colors.resize(g_mesh.faces.size());
+
     for (uint32_t &color : g_mesh.face_colors) {
+
       const int red = channel(generator);
+
       const int green = channel(generator);
+
       const int blue = channel(generator);
+
       color = MFB_RGB(red, green, blue);
+
     }
 
     printf("HW3 Part 4: calculated %zu face normals and %zu vertex normals\n",
@@ -1065,162 +1112,305 @@ static void draw_world_segment(const glm::vec3 &a, const glm::vec3 &b,
 }
 
 // Clip the triangle as a polygon before dividing by W. A triangle crossing
+
 // the near plane can still contribute a visible screen-space rectangle.
+
 static std::vector<glm::vec4> clip_triangle_polygon(
+
     const glm::vec4 &a, const glm::vec4 &b, const glm::vec4 &c) {
+
   if (!finite_clip_point(a) || !finite_clip_point(b) || !finite_clip_point(c))
+
     return {};
+
   std::vector<glm::vec4> polygon{a, b, c};
+
   for (int plane = 0; plane < 6 && !polygon.empty(); ++plane) {
+
     std::vector<glm::vec4> output;
+
     glm::vec4 previous = polygon.back();
+
     float previous_distance = clip_plane_distance(previous, plane);
+
     for (const glm::vec4 &current : polygon) {
+
       const float distance = clip_plane_distance(current, plane);
+
       const bool previous_inside = previous_distance >= 0.0f;
+
       const bool current_inside = distance >= 0.0f;
+
       if (previous_inside != current_inside) {
+
         const float t = previous_distance / (previous_distance - distance);
+
         output.push_back(previous + t * (current - previous));
+
       }
+
       if (current_inside) output.push_back(current);
+
       previous = current;
+
       previous_distance = distance;
+
     }
+
     polygon = std::move(output);
+
   }
+
   return polygon;
+
 }
 
 static void draw_triangle_bounding_rectangle(
+
     const glm::vec3 &a, const glm::vec3 &b, const glm::vec3 &c,
+
     uint32_t color) {
+
   const glm::mat4 pv = g_projection_matrix * g_view_matrix;
+
   const auto polygon = clip_triangle_polygon(
+
       pv * glm::vec4(a, 1), pv * glm::vec4(b, 1), pv * glm::vec4(c, 1));
+
   if (polygon.size() < 3) return;
 
   glm::vec2 minimum{float(VIEW_X + VIEW_WIDTH), float(VIEW_Y + VIEW_HEIGHT)};
+
   glm::vec2 maximum{float(VIEW_X), float(VIEW_Y)};
+
   for (const glm::vec4 &clip : polygon) {
+
     if (!finite_clip_point(clip) || clip.w <= 0.000001f) return;
+
     const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+
     const glm::vec2 screen(
+
         VIEW_X + (ndc.x + 1.0f) * 0.5f * VIEW_WIDTH,
+
         VIEW_Y + (ndc.y + 1.0f) * 0.5f * VIEW_HEIGHT);
+
     minimum = glm::min(minimum, screen);
+
     maximum = glm::max(maximum, screen);
+
   }
 
   const int min_x = clamp_int(int(std::floor(minimum.x)),
+
                               VIEW_X, VIEW_X + VIEW_WIDTH - 1);
+
   const int max_x = clamp_int(int(std::ceil(maximum.x)),
+
                               VIEW_X, VIEW_X + VIEW_WIDTH - 1);
+
   const int min_y = clamp_int(int(std::floor(minimum.y)),
+
                               VIEW_Y, VIEW_Y + VIEW_HEIGHT - 1);
+
   const int max_y = clamp_int(int(std::ceil(maximum.y)),
+
                               VIEW_Y, VIEW_Y + VIEW_HEIGHT - 1);
+
   // Exact one-pixel writes; the line brush would expand the rectangle.
+
   // Later faces overwrite earlier ones. No triangle test or depth test yet.
+
   for (int y = min_y; y <= max_y; ++y)
+
     for (int x = min_x; x <= max_x; ++x)
+
       g_buffer[y * WIDTH + x] = color;
+
 }
 
 // Twice the signed area of triangle (a, b, p).
+
 static double triangle_edge(const glm::vec2 &a, const glm::vec2 &b,
+
                             const glm::vec2 &p) {
+
   return (double(b.x) - a.x) * (double(p.y) - a.y) -
+
          (double(b.y) - a.y) * (double(p.x) - a.x);
+
 }
 
 static void fill_screen_triangle(const glm::vec3 &a, const glm::vec3 &b,
+
                                  const glm::vec3 &c, uint32_t color) {
+
   const glm::vec2 pa(a), pb(b), pc(c);
+
   const double area = triangle_edge(pa, pb, pc);
+
   if (!std::isfinite(area) || std::fabs(area) < 1e-8) return;
+
   const glm::vec2 minimum = glm::min(pa, glm::min(pb, pc));
+
   const glm::vec2 maximum = glm::max(pa, glm::max(pb, pc));
+
   const int min_x = clamp_int(int(std::floor(minimum.x)),
+
                               VIEW_X, VIEW_X + VIEW_WIDTH - 1);
+
   const int max_x = clamp_int(int(std::ceil(maximum.x)),
+
                               VIEW_X, VIEW_X + VIEW_WIDTH - 1);
+
   const int min_y = clamp_int(int(std::floor(minimum.y)),
+
                               VIEW_Y, VIEW_Y + VIEW_HEIGHT - 1);
+
   const int max_y = clamp_int(int(std::ceil(maximum.y)),
+
                               VIEW_Y, VIEW_Y + VIEW_HEIGHT - 1);
+
   for (int y = min_y; y <= max_y; ++y) {
+
     for (int x = min_x; x <= max_x; ++x) {
+
       // Sample at the center of each pixel, keeping projected floats.
+
       const glm::vec2 pixel(x + 0.5f, y + 0.5f);
+
       const double alpha = triangle_edge(pb, pc, pixel) / area;
+
       const double beta = triangle_edge(pc, pa, pixel) / area;
+
       const double gamma = triangle_edge(pa, pb, pixel) / area;
+
       // Division by signed area makes the test work for either winding.
+
       if (alpha >= 0.0 && alpha <= 1.0 &&
+
           beta >= 0.0 && beta <= 1.0 &&
+
           gamma >= 0.0 && gamma <= 1.0) {
+
         // Interpolate z/w after projection, not raw camera-space Z.
+
         // NDC depth is affine in screen barycentrics, even in perspective.
+
         const float depth = float(alpha * a.z + beta * b.z + gamma * c.z);
+
         const int index = y * WIDTH + x;
+
         if (!std::isfinite(depth)) continue;
+
         // Depth-map mode always needs a nearest-surface buffer.
+
         if ((g_enable_depth_test || g_show_depth_map) &&
+
             depth >= g_z_buffer[index]) continue;
+
         g_z_buffer[index] = depth;
+
         g_buffer[index] = color;
+
       }
+
     }
+
   }
+
 }
 
 static void draw_filled_triangle(const glm::vec3 &a, const glm::vec3 &b,
+
                                  const glm::vec3 &c, uint32_t color) {
+
   const glm::mat4 pv = g_projection_matrix * g_view_matrix;
+
   const auto polygon = clip_triangle_polygon(
+
       pv * glm::vec4(a, 1), pv * glm::vec4(b, 1), pv * glm::vec4(c, 1));
+
   if (polygon.size() < 3) return;
+
   std::vector<glm::vec3> screen;
+
   screen.reserve(polygon.size());
+
   for (const glm::vec4 &clip : polygon) {
+
     if (!finite_clip_point(clip) || clip.w <= 0.000001f) return;
+
     const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+
     screen.emplace_back(
+
         VIEW_X + (ndc.x + 1.0f) * 0.5f * VIEW_WIDTH,
+
         VIEW_Y + (ndc.y + 1.0f) * 0.5f * VIEW_HEIGHT,
+
         ndc.z * 0.5f + 0.5f);
+
   }
+
   // Frustum clipping can produce a polygon: triangulate it as a fan.
+
   // All pieces retain the original face's stable color.
+
   for (size_t i = 1; i + 1 < screen.size(); ++i)
+
     fill_screen_triangle(screen[0], screen[i], screen[i + 1], color);
+
 }
 
 // Display the actual stored depths with contrast stretched over visible pixels.
+
 // Close = bright, far = dark; untouched infinity pixels = black.
+
 static void visualize_depth_buffer() {
+
   float minimum = std::numeric_limits<float>::infinity();
+
   float maximum = -std::numeric_limits<float>::infinity();
+
   for (int y = VIEW_Y; y < VIEW_Y + VIEW_HEIGHT; ++y)
+
     for (int x = VIEW_X; x < VIEW_X + VIEW_WIDTH; ++x) {
+
       const float depth = g_z_buffer[y * WIDTH + x];
+
       if (!std::isfinite(depth)) continue;
+
       minimum = glm::min(minimum, depth);
+
       maximum = glm::max(maximum, depth);
+
     }
+
   const float range = maximum - minimum;
+
   for (int y = VIEW_Y; y < VIEW_Y + VIEW_HEIGHT; ++y)
+
     for (int x = VIEW_X; x < VIEW_X + VIEW_WIDTH; ++x) {
+
       const int index = y * WIDTH + x;
+
       const float depth = g_z_buffer[index];
+
       int gray = 0;
+
       if (std::isfinite(depth)) {
+
         const float t = range > 1e-7f ? (depth - minimum) / range : 0.5f;
+
         gray = int(std::lround(40.0f + 215.0f * (1.0f - glm::clamp(t, 0.0f, 1.0f))));
+
       }
+
       g_buffer[index] = MFB_RGB(gray, gray, gray);
+
     }
+
 }
 
 // Axes use the same matrix as their frame: identity for world, M for local.
@@ -1284,25 +1474,43 @@ static void draw_mesh_wireframe() {
   }
 
   if (g_show_triangle_boxes) {
+
     for (size_t i = 0; i < g_mesh.faces.size(); ++i) {
+
       const Face &face = g_mesh.faces[i];
+
       draw_triangle_bounding_rectangle(
+
           transform_point(g_mesh.vertices[face.indices[0]]),
+
           transform_point(g_mesh.vertices[face.indices[1]]),
+
           transform_point(g_mesh.vertices[face.indices[2]]),
+
           g_mesh.face_colors[i]);
+
     }
+
   }
 
   else if (g_fill_triangles) {
+
     for (size_t i = 0; i < g_mesh.faces.size(); ++i) {
+
       const Face &face = g_mesh.faces[i];
+
       draw_filled_triangle(
+
           transform_point(g_mesh.vertices[face.indices[0]]),
+
           transform_point(g_mesh.vertices[face.indices[1]]),
+
           transform_point(g_mesh.vertices[face.indices[2]]),
-          g_mesh.face_colors[i]);
+
+          g_enable_ambient_lighting ? ambient_face_color() : g_mesh.face_colors[i]);
+
     }
+
   }
 
   if (g_show_wireframe && !g_show_triangle_boxes && !g_fill_triangles) {
@@ -1609,6 +1817,44 @@ static void transformation_window(mu_Context *ctx, const char *title,
 
   }
 
+}
+
+// Compact rows fit in the existing 370 x 260 lower-left control panel.
+static void lighting_vector_row(mu_Context *ctx, const char *label,
+                                glm::vec3 &value, float minimum, float maximum) {
+  int widths[] = {98, 78, 78, -1};
+  mu_layout_row(ctx, 4, widths, 0);
+  mu_label(ctx, label);
+  mu_slider(ctx, &value.x, minimum, maximum);
+  mu_slider(ctx, &value.y, minimum, maximum);
+  mu_slider(ctx, &value.z, minimum, maximum);
+}
+
+static void lighting_window(mu_Context *ctx) {
+  const int options = MU_OPT_NORESIZE | MU_OPT_NOCLOSE | MU_OPT_NOTITLE;
+  if (mu_begin_window_ex(ctx, "HW5 Lighting", mu_rect(20, 420, 370, 260), options)) {
+    int full_width[] = {-1};
+    mu_layout_row(ctx, 1, full_width, 0);
+    mu_label(ctx, "HW5 Part 1: Ambient lighting");
+    mu_layout_row(ctx, 1, full_width, 0);
+    mu_checkbox(ctx, "Ambient lighting (off: HW4 colors)", &g_enable_ambient_lighting);
+    lighting_vector_row(ctx, "Position XYZ", g_light.position, -10.0f, 10.0f);
+    mu_layout_row(ctx, 1, full_width, 0);
+    mu_label(ctx, "Color sliders: Red / Green / Blue");
+    lighting_vector_row(ctx, "Light ambient", g_light.ambient, 0.0f, 1.0f);
+    lighting_vector_row(ctx, "Light diffuse", g_light.diffuse, 0.0f, 1.0f);
+    lighting_vector_row(ctx, "Light specular", g_light.specular, 0.0f, 1.0f);
+    lighting_vector_row(ctx, "Mat. ambient", g_material.ambient, 0.0f, 1.0f);
+    mu_layout_row(ctx, 1, full_width, 0);
+    if (mu_button(ctx, "Reset light and material")) {
+      g_light = PointLight{};
+      g_material = Material{};
+      g_enable_ambient_lighting = 1;
+    }
+    mu_layout_row(ctx, 1, full_width, 0);
+    mu_label(ctx, "Only Ambient affects the color in Part 1.");
+    mu_end_window(ctx);
+  }
 }
 
 static void camera_window(mu_Context *ctx) {
@@ -2200,6 +2446,9 @@ int main() {
       mu_checkbox(ctx, "Camera controls", &g_show_camera_controls);
 
       mu_layout_row(ctx, 1, widths, 0);
+      mu_checkbox(ctx, "Lighting controls", &g_show_lighting_controls);
+
+      mu_layout_row(ctx, 1, widths, 0);
 
       if (mu_button(ctx, "Quit"))
 
@@ -2218,14 +2467,23 @@ int main() {
       if (g_mesh_loaded) {
 
         mu_layout_row(ctx, 1, widths, 0);
+
         mu_checkbox(ctx, "Depth test", &g_enable_depth_test);
+
         mu_layout_row(ctx, 1, widths, 0);
+
         mu_checkbox(ctx, "Depth map", &g_show_depth_map);
+
         mu_layout_row(ctx, 1, widths, 0);
+
         mu_checkbox(ctx, "Fill triangles", &g_fill_triangles);
+
         mu_layout_row(ctx, 1, widths, 0);
+
         mu_checkbox(ctx, "Triangle boxes", &g_show_triangle_boxes);
+
         mu_layout_row(ctx, 1, widths, 0);
+
         mu_checkbox(ctx, "Local axes", &g_show_local_axes);
 
         mu_layout_row(ctx, 1, widths, 0);
@@ -2262,11 +2520,12 @@ int main() {
 
     if (g_show_transforms && !g_show_hw1_tools) {
 
-      transformation_window(ctx, "Local Transformations",
-
-                            mu_rect(20, 420, 370, 260),
-
-                            g_local_transform, true);
+      if (g_show_lighting_controls)
+        lighting_window(ctx);
+      else
+        transformation_window(ctx, "Local Transformations",
+                              mu_rect(20, 420, 370, 260),
+                              g_local_transform, true);
 
       // Share the lower-right panel; the checkbox selects its controls.
 
@@ -2291,10 +2550,15 @@ int main() {
       break;
 
     // Reset all depths every frame, after UI changes and before rasterization.
+
     std::fill_n(g_z_buffer, WIDTH * HEIGHT,
+
                 std::numeric_limits<float>::infinity());
+
     draw_mesh_wireframe();
+
     if (g_show_depth_map && g_fill_triangles && !g_show_triangle_boxes)
+
       visualize_depth_buffer();
 
     renderer.render(ctx, g_buffer);
