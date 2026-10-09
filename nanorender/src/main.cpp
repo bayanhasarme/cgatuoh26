@@ -64,6 +64,10 @@ static int g_show_world_axes = 1;
 
 static int g_show_bounding_box = 1;
 
+// HW3 Part 4: cyan face normals, magenta vertex normals.
+static int g_show_face_normals = 1;
+static int g_show_vertex_normals = 1;
+
 static constexpr int VIEW_X = 20;
 
 static constexpr int VIEW_Y = 20;
@@ -105,12 +109,16 @@ static int g_show_camera_controls = 1;
 static glm::mat4 g_view_matrix(1.0f);
 
 // HW3 Part 3: GLM right-handed projections, OpenGL depth range [-1, 1].
-static int g_use_perspective = 1;
-static float g_fov_degrees = 45.0f;
-static constexpr float NEAR_PLANE = 0.1f;
-static constexpr float FAR_PLANE = 100.0f;
-static glm::mat4 g_projection_matrix(1.0f);
 
+static int g_use_perspective = 1;
+
+static float g_fov_degrees = 45.0f;
+
+static constexpr float NEAR_PLANE = 0.1f;
+
+static constexpr float FAR_PLANE = 100.0f;
+
+static glm::mat4 g_projection_matrix(1.0f);
 
 // HW2 Part 6: intercept arrow input before ui_bridge_input.
 
@@ -293,6 +301,10 @@ struct Mesh {
   std::vector<glm::vec3> vertices;
 
   std::vector<Face> faces;
+
+  std::vector<glm::vec3> face_normals;
+  std::vector<glm::vec3> face_centers;
+  std::vector<glm::vec3> vertex_normals;
 
 };
 
@@ -550,6 +562,35 @@ static bool load_obj(const char *path, Mesh &mesh, std::string &error) {
 
 }
 
+// A degenerate triangle or cancelled sum has no defined unit normal.
+static glm::vec3 safe_unit_vector(const glm::vec3 &v) {
+  const float length = glm::length(v);
+  if (!std::isfinite(length) || length <= 0.0f)
+    return glm::vec3(0.0f);
+  return v / length;
+}
+
+static void calculate_normals(Mesh &mesh) {
+  mesh.face_normals.assign(mesh.faces.size(), glm::vec3(0.0f));
+  mesh.face_centers.resize(mesh.faces.size());
+  mesh.vertex_normals.assign(mesh.vertices.size(), glm::vec3(0.0f));
+  for (size_t i = 0; i < mesh.faces.size(); ++i) {
+    const Face &face = mesh.faces[i];
+    const glm::vec3 &a = mesh.vertices[face.indices[0]];
+    const glm::vec3 &b = mesh.vertices[face.indices[1]];
+    const glm::vec3 &c = mesh.vertices[face.indices[2]];
+    const glm::vec3 normal = safe_unit_vector(glm::cross(b - a, c - a));
+    mesh.face_normals[i] = normal;
+    mesh.face_centers[i] = (a + b + c) / 3.0f;
+    // Equal weight for each adjacent triangle. Normalizing the sum gives
+    // the same direction as normalizing the arithmetic average.
+    for (size_t index : face.indices)
+      mesh.vertex_normals[index] += normal;
+  }
+  for (glm::vec3 &normal : mesh.vertex_normals)
+    normal = safe_unit_vector(normal);
+}
+
 static void reload_mesh() {
 
   g_mesh_loaded = load_obj(g_mesh_path, g_mesh, g_mesh_error);
@@ -565,6 +606,9 @@ static void reload_mesh() {
     printf("Faces: %zu\n", g_mesh.faces.size());
 
     calculate_viewport_fit(g_mesh);
+    calculate_normals(g_mesh);
+    printf("HW3 Part 4: calculated %zu face normals and %zu vertex normals\n",
+           g_mesh.face_normals.size(), g_mesh.vertex_normals.size());
 
     printf("HW2 Part 2: bounding box and viewport fit\n");
 
@@ -805,88 +849,159 @@ static void draw_line_bresenham(int x0, int y0, int x1, int y1,
 }
 
 // Camera looks along -Z. Use the actual scene viewport aspect ratio.
+
 static glm::mat4 projection_matrix() {
+
   const float aspect = float(VIEW_WIDTH) / float(VIEW_HEIGHT);
+
   if (g_use_perspective)
+
     return glm::perspectiveRH_NO(glm::radians(g_fov_degrees), aspect,
+
                                  NEAR_PLANE, FAR_PLANE);
+
   // Match the previous HW2 pixel scale; ortho size is independent of camera Z.
+
   const float half_height = float(VIEW_HEIGHT) / g_fit.scale;
+
   const float half_width = half_height * aspect;
+
   return glm::orthoRH_NO(-half_width, half_width, -half_height, half_height,
+
                          NEAR_PLANE, FAR_PLANE);
+
 }
 
 static bool finite_clip_point(const glm::vec4 &p) {
+
   return std::isfinite(p.x) && std::isfinite(p.y) &&
+
          std::isfinite(p.z) && std::isfinite(p.w);
+
 }
 
 // Signed distances to the six homogeneous frustum planes (inside >= 0).
+
 static float clip_plane_distance(const glm::vec4 &p, int plane) {
+
   switch (plane) {
+
   case 0: return p.w + p.x;
+
   case 1: return p.w - p.x;
+
   case 2: return p.w + p.y;
+
   case 3: return p.w - p.y;
+
   case 4: return p.w + p.z;
+
   default: return p.w - p.z;
+
   }
+
 }
 
 // Clip BEFORE dividing by W: even an edge crossing the near plane is valid.
+
 static bool clip_segment(glm::vec4 &a, glm::vec4 &b) {
+
   if (!finite_clip_point(a) || !finite_clip_point(b))
+
     return false;
+
   float enter = 0.0f, leave = 1.0f;
+
   for (int plane = 0; plane < 6; ++plane) {
+
     const float da = clip_plane_distance(a, plane);
+
     const float db = clip_plane_distance(b, plane);
+
     if (da < 0.0f && db < 0.0f)
+
       return false;
+
     if (da < 0.0f || db < 0.0f) {
+
       const float t = da / (da - db);
+
       if (da < 0.0f) enter = glm::max(enter, t);
+
       else leave = glm::min(leave, t);
+
       if (enter > leave) return false;
+
     }
+
   }
+
   const glm::vec4 original = a;
+
   const glm::vec4 delta = b - a;
+
   a = original + enter * delta;
+
   b = original + leave * delta;
+
   return a.w > 0.000001f && b.w > 0.000001f;
+
 }
 
 static glm::ivec2 clip_to_screen(const glm::vec4 &clip) {
+
   const glm::vec3 ndc = glm::vec3(clip) / clip.w; // Perspective divide.
+
   // Keep the previous assignments' convention: positive Y goes down.
+
   return glm::ivec2(
+
       int(std::lround(VIEW_X + (glm::clamp(ndc.x, -1.0f, 1.0f) + 1.0f) *
+
                               0.5f * VIEW_WIDTH)),
+
       int(std::lround(VIEW_Y + (glm::clamp(ndc.y, -1.0f, 1.0f) + 1.0f) *
+
                               0.5f * VIEW_HEIGHT)));
+
 }
 
 static bool world_to_screen(const glm::vec3 &point, glm::ivec2 &screen) {
+
   const glm::vec4 clip = g_projection_matrix * g_view_matrix * glm::vec4(point, 1);
+
   if (!finite_clip_point(clip) || clip.w <= 0.000001f)
+
     return false;
+
   for (int plane = 0; plane < 6; ++plane)
+
     if (clip_plane_distance(clip, plane) < 0.0f) return false;
+
   screen = clip_to_screen(clip);
+
   return true;
+
 }
 
 static void draw_world_segment(const glm::vec3 &a, const glm::vec3 &b,
+
                                uint32_t color) {
+
   // The endpoints already contain Model; this completes P * V * M * vertex.
+
   glm::vec4 ca = g_projection_matrix * g_view_matrix * glm::vec4(a, 1);
+
   glm::vec4 cb = g_projection_matrix * g_view_matrix * glm::vec4(b, 1);
+
   if (!clip_segment(ca, cb)) return;
+
   const glm::ivec2 pa = clip_to_screen(ca);
+
   const glm::ivec2 pb = clip_to_screen(cb);
+
   draw_line_bresenham(pa.x, pa.y, pb.x, pb.y, color);
+
 }
 
 // Axes use the same matrix as their frame: identity for world, M for local.
@@ -932,15 +1047,21 @@ static void draw_mesh_wireframe() {
   };
 
   g_view_matrix = camera_view_matrix(g_camera);
+
   g_projection_matrix = projection_matrix();
 
   g_clip_mesh_pixels = true;
 
   glm::ivec2 origin;
+
   if (world_to_screen(glm::vec3(0), origin)) {
+
     const uint32_t orange = MFB_RGB(255, 190, 60);
+
     draw_line_bresenham(origin.x - 7, origin.y, origin.x + 7, origin.y, orange);
+
     draw_line_bresenham(origin.x, origin.y - 7, origin.x, origin.y + 7, orange);
+
   }
 
   if (g_show_wireframe) {
@@ -1017,6 +1138,35 @@ static void draw_mesh_wireframe() {
 
     draw_coordinate_axes(model, axis_length);
 
+  if (g_show_face_normals || g_show_vertex_normals) {
+    // Directions require inverse-transpose, especially for nonuniform scale.
+    // Translation affects the base point only, never the normal direction.
+    const glm::mat3 linear(model);
+    const float determinant = glm::determinant(linear);
+    if (std::isfinite(determinant) && std::fabs(determinant) > 1e-12f) {
+      const glm::mat3 normal_matrix = glm::transpose(glm::inverse(linear));
+      const float normal_length = 0.2f * glm::max(extent.x,
+                                                 glm::max(extent.y, extent.z));
+      const auto draw_normal = [&](const glm::vec3 &base,
+                                   const glm::vec3 &normal, uint32_t color) {
+        const glm::vec3 direction = safe_unit_vector(normal_matrix * normal);
+        if (glm::dot(direction, direction) == 0.0f) return;
+        const glm::vec3 world_base = transform_point(base);
+        draw_world_segment(world_base, world_base + normal_length * direction,
+                           color);
+      };
+      if (g_show_face_normals) {
+        for (size_t i = 0; i < g_mesh.faces.size(); ++i)
+          draw_normal(g_mesh.face_centers[i], g_mesh.face_normals[i],
+                      MFB_RGB(0, 230, 255));
+      }
+      if (g_show_vertex_normals) {
+        for (size_t i = 0; i < g_mesh.vertices.size(); ++i)
+          draw_normal(g_mesh.vertices[i], g_mesh.vertex_normals[i],
+                      MFB_RGB(255, 90, 220));
+      }
+    }
+  }
   g_clip_mesh_pixels = false;
 
 }
@@ -1230,13 +1380,21 @@ static void camera_window(mu_Context *ctx) {
     mu_layout_row(ctx, 1, full_width, 0);
 
     if (mu_button(ctx, g_use_perspective ? "Projection: Perspective" :
+
                                          "Projection: Orthographic"))
+
       g_use_perspective = !g_use_perspective;
+
     int fov_widths[] = {110, -1};
+
     mu_layout_row(ctx, 2, fov_widths, 0);
+
     mu_label(ctx, "FOV (degrees)");
+
     mu_slider(ctx, &g_fov_degrees, 20.0f, 100.0f);
+
     mu_layout_row(ctx, 1, full_width, 0);
+
     mu_label(ctx, "Near: 0.1 / Far: 100");
 
     mu_end_window(ctx);
@@ -1789,27 +1947,29 @@ int main() {
 
       if (g_mesh_loaded) {
 
-        fit_vector_label(ctx, "Minimum XYZ:", g_fit.minimum);
-
-        fit_vector_label(ctx, "Maximum XYZ:", g_fit.maximum);
-
-        fit_vector_label(ctx, "Model center:", g_fit.center);
-
+        // Compact bounds leave room for all five debug toggles.
+        const auto bounds_row = [&](const char *name, const glm::vec3 &value) {
+          char text[96];
+          snprintf(text, sizeof(text), "%s: %.1f %.1f %.1f",
+                   name, value.x, value.y, value.z);
+          mu_layout_row(ctx, 1, widths, 0);
+          mu_text(ctx, text);
+        };
+        bounds_row("Min", g_fit.minimum);
+        bounds_row("Max", g_fit.maximum);
+        bounds_row("Center", g_fit.center);
         mu_layout_row(ctx, 1, widths, 0);
-
-      mu_checkbox(ctx, "Local axes", &g_show_local_axes);
-
-      mu_layout_row(ctx, 1, widths, 0);
-
-      mu_checkbox(ctx, "World axes", &g_show_world_axes);
-
-      mu_layout_row(ctx, 1, widths, 0);
-
-      mu_checkbox(ctx, "Bounding box", &g_show_bounding_box);
-
-      mu_layout_row(ctx, 1, widths, 0);
-
-      mu_text(ctx, "X red, Y green, Z blue. Box yellow.");
+        mu_checkbox(ctx, "Local axes", &g_show_local_axes);
+        mu_layout_row(ctx, 1, widths, 0);
+        mu_checkbox(ctx, "World axes", &g_show_world_axes);
+        mu_layout_row(ctx, 1, widths, 0);
+        mu_checkbox(ctx, "Bounding box", &g_show_bounding_box);
+        mu_layout_row(ctx, 1, widths, 0);
+        mu_checkbox(ctx, "Face normals", &g_show_face_normals);
+        mu_layout_row(ctx, 1, widths, 0);
+        mu_checkbox(ctx, "Vertex normals", &g_show_vertex_normals);
+        mu_layout_row(ctx, 1, widths, 0);
+        mu_text(ctx, "Face: cyan. Vertex: pink. Axes: RGB.");
 
     } else {
 
