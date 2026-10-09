@@ -162,6 +162,9 @@ static int g_enable_ambient_lighting = 1;
 
 static int g_enable_diffuse_lighting = 1;
 
+static int g_enable_specular_lighting = 1;
+static int g_show_light_vectors = 0;
+
 static uint32_t ambient_face_color() {
 
   // Component-wise multiplication: Ia.rgb * Ka.rgb.
@@ -657,20 +660,49 @@ static glm::vec3 safe_unit_vector(const glm::vec3 &v) {
 }
 
 // HW5 Part 2: all lighting vectors and positions are in world space.
+
 // Evaluate once per ORIGINAL face, so every rasterized pixel shares its color.
+
+// Incident direction points INTO the surface: I = -L.
+static glm::vec3 reflection_direction(const glm::vec3 &incident,
+                                       const glm::vec3 &unit_normal) {
+  return incident - 2.0f * glm::dot(incident, unit_normal) * unit_normal;
+}
+
 static uint32_t flat_face_color(const glm::vec3 &world_center,
+
                                 const glm::vec3 &world_normal) {
+
   if (!g_enable_diffuse_lighting) return ambient_face_color();
+
   const glm::vec3 normal = safe_unit_vector(world_normal);
+
   const glm::vec3 light_direction = safe_unit_vector(g_light.position - world_center);
+
   const float lambert = glm::max(glm::dot(normal, light_direction), 0.0f);
+
   const glm::vec3 ambient = g_light.ambient * g_material.ambient;
+
   const glm::vec3 diffuse = g_light.diffuse * g_material.diffuse * lambert;
-  const glm::vec3 color = glm::clamp(ambient + diffuse,
+
+  glm::vec3 specular(0.0f);
+  if (g_enable_specular_lighting && lambert > 0.0f) {
+    const glm::vec3 view_direction = safe_unit_vector(g_camera.position - world_center);
+    const glm::vec3 reflected = safe_unit_vector(reflection_direction(-light_direction, normal));
+    const float alignment = glm::clamp(glm::dot(reflected, view_direction), 0.0f, 1.0f);
+    const float highlight = std::pow(alignment, g_material.shininess);
+    specular = g_light.specular * g_material.specular * highlight;
+  }
+  const glm::vec3 color = glm::clamp(ambient + diffuse + specular,
+
                                     glm::vec3(0.0f), glm::vec3(1.0f));
+
   return MFB_RGB(int(std::lround(color.r * 255.0f)),
+
                  int(std::lround(color.g * 255.0f)),
+
                  int(std::lround(color.b * 255.0f)));
+
 }
 
 static void calculate_normals(Mesh &mesh) {
@@ -1479,6 +1511,21 @@ static void draw_coordinate_axes(const glm::mat4 &frame, float length) {
 
 }
 
+// Draw arrowheads with the same clipped Bresenham segment path as the mesh.
+static void draw_world_arrow(const glm::vec3 &start, const glm::vec3 &end,
+                              uint32_t color) {
+  draw_world_segment(start, end, color);
+  const glm::vec3 direction = safe_unit_vector(end - start);
+  const float length = glm::length(end - start);
+  if (length <= 0.0f) return;
+  const glm::vec3 reference = std::fabs(direction.y) < 0.9f
+                            ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
+  const glm::vec3 side = safe_unit_vector(glm::cross(direction, reference));
+  const glm::vec3 back = end - direction * (length * 0.15f);
+  draw_world_segment(end, back + side * (length * 0.07f), color);
+  draw_world_segment(end, back - side * (length * 0.07f), color);
+}
+
 static void draw_mesh_wireframe() {
 
   if (!g_mesh_loaded)
@@ -1536,12 +1583,16 @@ static void draw_mesh_wireframe() {
   else if (g_fill_triangles) {
 
     // Inverse transpose preserves perpendicularity under nonuniform scaling.
-    const glm::mat3 linear(model);
-    const float determinant = glm::determinant(linear);
-    const glm::mat3 normal_matrix =
-        (std::isfinite(determinant) && std::fabs(determinant) > 1e-12f)
-        ? glm::transpose(glm::inverse(linear)) : glm::mat3(0.0f);
 
+    const glm::mat3 linear(model);
+
+    const float determinant = glm::determinant(linear);
+
+    const glm::mat3 normal_matrix =
+
+        (std::isfinite(determinant) && std::fabs(determinant) > 1e-12f)
+
+        ? glm::transpose(glm::inverse(linear)) : glm::mat3(0.0f);
 
     for (size_t i = 0; i < g_mesh.faces.size(); ++i) {
 
@@ -1556,8 +1607,11 @@ static void draw_mesh_wireframe() {
           transform_point(g_mesh.vertices[face.indices[2]]),
 
           g_enable_ambient_lighting
+
               ? flat_face_color(transform_point(g_mesh.face_centers[i]),
+
                                 normal_matrix * g_mesh.face_normals[i])
+
               : g_mesh.face_colors[i]);
 
     }
@@ -1694,6 +1748,30 @@ static void draw_mesh_wireframe() {
 
     }
 
+  }
+
+  if (g_show_light_vectors) {
+    const glm::mat3 linear(model);
+    const float determinant = glm::determinant(linear);
+    if (std::isfinite(determinant) && std::fabs(determinant) > 1e-12f) {
+      const glm::mat3 normal_matrix = glm::transpose(glm::inverse(linear));
+      const float vector_length = 0.55f * glm::max(extent.x, glm::max(extent.y, extent.z));
+      int drawn = 0;
+      for (size_t i = 0; i < g_mesh.faces.size() && drawn < 3; ++i) {
+        const glm::vec3 center = transform_point(g_mesh.face_centers[i]);
+        const glm::vec3 normal = safe_unit_vector(normal_matrix * g_mesh.face_normals[i]);
+        const glm::vec3 light = safe_unit_vector(g_light.position - center);
+        const glm::vec3 view = safe_unit_vector(g_camera.position - center);
+        // Show a few camera-facing, illuminated faces to reduce clutter.
+        if (glm::dot(normal, view) <= 0.0f || glm::dot(normal, light) <= 0.0f) continue;
+        const glm::vec3 reflected = safe_unit_vector(reflection_direction(-light, normal));
+        // Yellow arrow travels from the light side toward the face center.
+        draw_world_arrow(center + vector_length * light, center, MFB_RGB(255, 220, 40));
+        // Cyan arrow travels outward from the same center along R.
+        draw_world_arrow(center, center + vector_length * reflected, MFB_RGB(0, 230, 255));
+        ++drawn;
+      }
+    }
   }
 
   g_clip_mesh_pixels = false;
@@ -1891,58 +1969,61 @@ static void lighting_vector_row(mu_Context *ctx, const char *label,
 }
 
 static void lighting_window(mu_Context *ctx) {
-
   const int options = MU_OPT_NORESIZE | MU_OPT_NOCLOSE | MU_OPT_NOTITLE;
-
   if (mu_begin_window_ex(ctx, "HW5 Lighting", mu_rect(20, 420, 370, 260), options)) {
-
     int full_width[] = {-1};
-
     mu_layout_row(ctx, 1, full_width, 0);
-
-    mu_label(ctx, "HW5 Part 2: Flat shading");
-
-    mu_layout_row(ctx, 1, full_width, 0);
-
-    mu_checkbox(ctx, "Lighting (off: HW4 colors)", &g_enable_ambient_lighting);
-
+    mu_label(ctx, "HW5 Part 3: Specular (RGB colors)");
+    int toggle_widths[] = {180, -1};
+    mu_layout_row(ctx, 2, toggle_widths, 0);
+    mu_checkbox(ctx, "Lighting", &g_enable_ambient_lighting);
+    mu_checkbox(ctx, "Specular", &g_enable_specular_lighting);
     lighting_vector_row(ctx, "Position XYZ", g_light.position, -10.0f, 10.0f);
-
     mu_layout_row(ctx, 1, full_width, 0);
-
     if (mu_button(ctx, g_enable_diffuse_lighting
                       ? "Mode: Ambient + Diffuse" : "Mode: Ambient only"))
       g_enable_diffuse_lighting = !g_enable_diffuse_lighting;
-
     lighting_vector_row(ctx, "Light ambient", g_light.ambient, 0.0f, 1.0f);
-
     lighting_vector_row(ctx, "Light diffuse", g_light.diffuse, 0.0f, 1.0f);
-
     lighting_vector_row(ctx, "Light specular", g_light.specular, 0.0f, 1.0f);
-
-    lighting_vector_row(ctx, "Mat. ambient", g_material.ambient, 0.0f, 1.0f);
-
+    int number_widths[] = {98, -1};
+    mu_layout_row(ctx, 2, number_widths, 0);
+    mu_label(ctx, "Shininess");
+    mu_slider(ctx, &g_material.shininess, 1.0f, 128.0f);
     mu_layout_row(ctx, 1, full_width, 0);
-
-    if (mu_button(ctx, "Reset light and material")) {
-
+    mu_checkbox(ctx, "Vectors: yellow IN / cyan OUT", &g_show_light_vectors);
+    int button_widths[] = {170, -1};
+    mu_layout_row(ctx, 2, button_widths, 0);
+    if (mu_button(ctx, "Reset light")) {
       g_light = PointLight{};
-
       g_material = Material{};
-
       g_enable_ambient_lighting = 1;
       g_enable_diffuse_lighting = 1;
-
+      g_enable_specular_lighting = 1;
+      g_show_light_vectors = 0;
     }
-
-    mu_layout_row(ctx, 1, full_width, 0);
-
-    mu_label(ctx, "Colors: R/G/B. Specular starts in Part 3.");
-
+    if (mu_button(ctx, "Demo highlight")) {
+      g_light = PointLight{};
+      g_material = Material{};
+      g_light.position = glm::vec3(3.0f, 0.0f, -1.0f);
+      g_light.ambient = glm::vec3(0.15f);
+      g_light.diffuse = glm::vec3(0.5f);
+      g_material.shininess = 8.0f;
+      g_camera = Camera{};
+      g_local_transform = TransformState{};
+      g_world_transform = TransformState{};
+      g_use_perspective = 1;
+      g_fov_degrees = 45.0f;
+      g_enable_ambient_lighting = 1;
+      g_enable_diffuse_lighting = 1;
+      g_enable_specular_lighting = 1;
+      g_fill_triangles = 1;
+      g_show_triangle_boxes = 0;
+      g_enable_depth_test = 1;
+      g_show_depth_map = 0;
+    }
     mu_end_window(ctx);
-
   }
-
 }
 
 static void camera_window(mu_Context *ctx) {
