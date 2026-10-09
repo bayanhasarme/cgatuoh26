@@ -57,8 +57,11 @@ static int g_show_transforms = 1;
 static int g_enable_arrow_controls = 1;
 
 // HW3 Part 1 debug geometry.
+
 static int g_show_local_axes = 1;
+
 static int g_show_world_axes = 1;
+
 static int g_show_bounding_box = 1;
 
 static constexpr int VIEW_X = 20;
@@ -84,6 +87,17 @@ struct TransformState {
 static TransformState g_local_transform;
 
 static TransformState g_world_transform;
+
+// HW3 Part 2: a camera has a rigid world pose (no scale).
+struct Camera {
+  glm::vec3 position{0.0f, 0.0f, 5.0f};
+  glm::vec3 rotation{0.0f}; // Degrees; same Rz * Ry * Rx convention.
+};
+
+static Camera g_camera;
+static int g_show_camera_controls = 1;
+static glm::mat4 g_view_matrix(1.0f);
+
 
 // HW2 Part 6: intercept arrow input before ui_bridge_input.
 
@@ -211,6 +225,14 @@ static glm::mat4 transformation_matrix(const TransformState &state) {
 
   return t * r * s;
 
+}
+
+// Invert the entire camera pose: inverse(T * R) = inverse(R) * inverse(T).
+// Negating Euler angles in the original order would give the wrong inverse.
+static glm::mat4 camera_view_matrix(const Camera &camera) {
+  const glm::mat4 pose = glm::translate(glm::mat4(1.0f), camera.position) *
+                         rotation_matrix(camera.rotation);
+  return glm::inverse(pose);
 }
 
 static void set_comparison_demo(bool orbit) {
@@ -773,90 +795,162 @@ static glm::ivec2 project_orthographic(const glm::vec3 &vertex) {
 
 }
 
-// Convert a world-space point using the existing HW2 orthographic mapping.
+// Apply View after Model, then use the existing orthographic projection.
+
 static glm::ivec2 world_to_screen(const glm::vec3 &point) {
+
   const glm::vec3 center(VIEW_X + VIEW_WIDTH * 0.5f,
+
                          VIEW_Y + VIEW_HEIGHT * 0.5f, 0.0f);
-  return project_orthographic(center + g_fit.scale * 0.5f * point);
+
+  const glm::vec3 camera_point(g_view_matrix * glm::vec4(point, 1.0f));
+  // Orthographic projection still drops Z. Perspective is HW3 Part 3.
+  return project_orthographic(center + g_fit.scale * 0.5f * camera_point);
+
 }
 
 static void draw_world_segment(const glm::vec3 &a, const glm::vec3 &b,
+
                                uint32_t color) {
+
   const glm::ivec2 pa = world_to_screen(a);
+
   const glm::ivec2 pb = world_to_screen(b);
+
   draw_line_bresenham(pa.x, pa.y, pb.x, pb.y, color);
+
 }
 
 // Axes use the same matrix as their frame: identity for world, M for local.
+
 static void draw_coordinate_axes(const glm::mat4 &frame, float length) {
+
   const glm::vec3 origin(frame * glm::vec4(0, 0, 0, 1));
+
   const glm::vec3 ends[] = {
+
       glm::vec3(length, 0, 0), glm::vec3(0, length, 0),
+
       glm::vec3(0, 0, length)};
+
   const uint32_t colors[] = {
+
       MFB_RGB(255, 70, 70), MFB_RGB(70, 255, 100), MFB_RGB(70, 140, 255)};
+
   for (int i = 0; i < 3; ++i) {
+
     const glm::vec3 end(frame * glm::vec4(ends[i], 1));
+
     draw_world_segment(origin, end, colors[i]);
+
   }
+
 }
 
 static void draw_mesh_wireframe() {
+
   if (!g_mesh_loaded)
+
     return;
 
   const glm::mat4 model = transformation_matrix(g_world_transform) *
+
                           transformation_matrix(g_local_transform);
+
   const auto transform_point = [&](const glm::vec3 &original) {
+
     return glm::vec3(model * glm::vec4(original - g_fit.center, 1));
+
   };
 
+  g_view_matrix = camera_view_matrix(g_camera);
+
   g_clip_mesh_pixels = true;
+
   const glm::ivec2 origin = world_to_screen(glm::vec3(0));
+
   const uint32_t orange = MFB_RGB(255, 190, 60);
+
   draw_line_bresenham(origin.x - 7, origin.y, origin.x + 7, origin.y, orange);
+
   draw_line_bresenham(origin.x, origin.y - 7, origin.x, origin.y + 7, orange);
 
   if (g_show_wireframe) {
+
     const uint32_t white = MFB_RGB(255, 255, 255);
+
     for (const Face &face : g_mesh.faces) {
+
       const glm::vec3 a = transform_point(g_mesh.vertices[face.indices[0]]);
+
       const glm::vec3 b = transform_point(g_mesh.vertices[face.indices[1]]);
+
       const glm::vec3 c = transform_point(g_mesh.vertices[face.indices[2]]);
+
       draw_world_segment(a, b, white);
+
       draw_world_segment(b, c, white);
+
       draw_world_segment(c, a, white);
+
     }
+
   }
 
   if (g_show_bounding_box) {
+
     // Every combination of min/max X, Y, Z gives one of the eight corners.
+
     std::array<glm::vec3, 8> corners;
+
     for (int i = 0; i < 8; ++i) {
+
       const glm::vec3 original(
+
           (i & 1) ? g_fit.maximum.x : g_fit.minimum.x,
+
           (i & 2) ? g_fit.maximum.y : g_fit.minimum.y,
+
           (i & 4) ? g_fit.maximum.z : g_fit.minimum.z);
+
       corners[i] = transform_point(original);
+
     }
+
     // Connect corners differing in exactly one bit: 12 unique edges.
+
     const uint32_t yellow = MFB_RGB(255, 220, 70);
+
     for (int i = 0; i < 8; ++i) {
+
       for (int bit = 1; bit <= 4; bit *= 2) {
+
         if ((i & bit) == 0)
+
           draw_world_segment(corners[i], corners[i | bit], yellow);
+
       }
+
     }
+
   }
 
   const glm::vec3 extent = g_fit.maximum - g_fit.minimum;
+
   const float axis_length = 0.4f * glm::max(extent.x,
+
                                           glm::max(extent.y, extent.z));
+
   if (g_show_world_axes)
+
     draw_coordinate_axes(glm::mat4(1.0f), axis_length);
+
   if (g_show_local_axes)
+
     draw_coordinate_axes(model, axis_length);
+
   g_clip_mesh_pixels = false;
+
 }
 
 static void handle_line_drawing(mu_Context *ctx) {
@@ -1027,6 +1121,30 @@ static void transformation_window(mu_Context *ctx, const char *title,
 
   }
 
+}
+
+static void camera_window(mu_Context *ctx) {
+  const int options = MU_OPT_NORESIZE | MU_OPT_NOCLOSE | MU_OPT_NOTITLE;
+  if (mu_begin_window_ex(ctx, "HW3 Camera", mu_rect(405, 420, 370, 260), options)) {
+    int full_width[] = {-1};
+    int axis_widths[] = {108, 108, -1};
+    mu_layout_row(ctx, 1, full_width, 0);
+    mu_label(ctx, "HW3 Camera (world pose)");
+    mu_layout_row(ctx, 3, axis_widths, 0);
+    mu_label(ctx, "X");
+    mu_label(ctx, "Y");
+    mu_label(ctx, "Z");
+    transform_vector_controls(ctx, "Camera position (model units)",
+                              g_camera.position, -10.0f, 10.0f);
+    transform_vector_controls(ctx, "Camera rotation (degrees)",
+                              g_camera.rotation, -180.0f, 180.0f);
+    mu_layout_row(ctx, 1, full_width, 0);
+    if (mu_button(ctx, "Reset camera"))
+      g_camera = Camera{};
+    mu_layout_row(ctx, 1, full_width, 0);
+    mu_text(ctx, "View = inverse(T * R). Camera left: scene right. Orthographic: Z alone does not change size.");
+    mu_end_window(ctx);
+  }
 }
 
 int main() {
@@ -1553,7 +1671,7 @@ int main() {
 
       mu_layout_row(ctx, 1, widths, 0);
 
-      mu_text(ctx, "Arrows: world XY (0.1). Orange +: origin.");
+      mu_checkbox(ctx, "Camera controls", &g_show_camera_controls);
 
       mu_layout_row(ctx, 1, widths, 0);
 
@@ -1580,13 +1698,21 @@ int main() {
         fit_vector_label(ctx, "Model center:", g_fit.center);
 
         mu_layout_row(ctx, 1, widths, 0);
+
       mu_checkbox(ctx, "Local axes", &g_show_local_axes);
+
       mu_layout_row(ctx, 1, widths, 0);
+
       mu_checkbox(ctx, "World axes", &g_show_world_axes);
+
       mu_layout_row(ctx, 1, widths, 0);
+
       mu_checkbox(ctx, "Bounding box", &g_show_bounding_box);
+
       mu_layout_row(ctx, 1, widths, 0);
+
       mu_text(ctx, "X red, Y green, Z blue. Box yellow.");
+
     } else {
 
         mu_layout_row(ctx, 1, widths, 0);
@@ -1607,11 +1733,13 @@ int main() {
 
                             g_local_transform, true);
 
-      transformation_window(ctx, "World Transformations",
-
-                            mu_rect(405, 420, 370, 260),
-
-                            g_world_transform, false);
+      // Share the lower-right panel; the checkbox selects its controls.
+      if (g_show_camera_controls)
+        camera_window(ctx);
+      else
+        transformation_window(ctx, "World Transformations",
+                              mu_rect(405, 420, 370, 260),
+                              g_world_transform, false);
 
     }
 
