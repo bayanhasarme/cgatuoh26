@@ -10,6 +10,8 @@
 constexpr unsigned WIDTH = 1000;
 constexpr unsigned HEIGHT = 700;
 constexpr float PI = 3.14159265358979323846f;
+constexpr unsigned GRID_CELLS = 64;
+constexpr float GRID_SPACING = 0.25f;
 
 struct Vertex {
     float x, y, z;
@@ -43,9 +45,15 @@ struct CameraSettings {
     float scale = 31.0f;
 };
 
+struct WaterSettings {
+    bool visible = true;
+    float level = -0.25f;
+};
+
 struct InputChanges {
     bool terrain = false;
     bool camera = false;
+    bool water = false;
 };
 
 Vertex subtract(const Vertex& a, const Vertex& b) {
@@ -66,11 +74,9 @@ float dot(const Vertex& a, const Vertex& b) {
 
 Vertex normalize(const Vertex& v) {
     float length = std::sqrt(dot(v, v));
-
     if (length < 0.000001f) {
         return {0.0f, 1.0f, 0.0f};
     }
-
     return {v.x / length, v.y / length, v.z / length};
 }
 
@@ -95,19 +101,16 @@ Mesh createGrid(unsigned cells, float spacing) {
     }
 
     unsigned rowSize = cells + 1;
-
     for (unsigned z = 0; z < cells; ++z) {
         for (unsigned x = 0; x < cells; ++x) {
             unsigned a = z * rowSize + x;
             unsigned b = a + 1;
             unsigned c = a + rowSize;
             unsigned d = c + 1;
-
             mesh.triangles.push_back({a, c, b});
             mesh.triangles.push_back({b, c, d});
         }
     }
-
     return mesh;
 }
 
@@ -115,7 +118,6 @@ void applyHill(Mesh& mesh, float height, float radius) {
     for (auto& vertex : mesh.vertices) {
         float distanceSquared =
             vertex.x * vertex.x + vertex.z * vertex.z;
-
         vertex.y = height * std::exp(
             -distanceSquared / (2.0f * radius * radius));
     }
@@ -145,19 +147,16 @@ float smoothStep(float t) {
 float valueNoise(float x, float z, std::uint32_t seed) {
     int x0 = static_cast<int>(std::floor(x));
     int z0 = static_cast<int>(std::floor(z));
-
     float tx = smoothStep(x - x0);
     float tz = smoothStep(z - z0);
 
     float top = interpolate(
         latticeValue(x0, z0, seed),
-        latticeValue(x0 + 1, z0, seed),
-        tx);
+        latticeValue(x0 + 1, z0, seed), tx);
 
     float bottom = interpolate(
         latticeValue(x0, z0 + 1, seed),
-        latticeValue(x0 + 1, z0 + 1, seed),
-        tx);
+        latticeValue(x0 + 1, z0 + 1, seed), tx);
 
     return interpolate(top, bottom, tz);
 }
@@ -171,12 +170,10 @@ float fractalNoise(float x, float z,
     for (unsigned layer = 0; layer < settings.octaves; ++layer) {
         total += weight * valueNoise(x, z, settings.seed);
         totalWeight += weight;
-
         weight *= settings.persistence;
         x *= settings.lacunarity;
         z *= settings.lacunarity;
     }
-
     return totalWeight > 0.0f ? total / totalWeight : 0.0f;
 }
 
@@ -184,8 +181,7 @@ void applyNoise(Mesh& mesh, const TerrainSettings& settings) {
     for (auto& vertex : mesh.vertices) {
         vertex.y = settings.amplitude * fractalNoise(
             vertex.x * settings.frequency,
-            vertex.z * settings.frequency,
-            settings);
+            vertex.z * settings.frequency, settings);
     }
 }
 
@@ -198,13 +194,10 @@ ScreenPoint project(const Vertex& vertex,
 
     float horizontal =
         cosYaw * vertex.x - sinYaw * vertex.z;
-
     float forward =
         sinYaw * vertex.x + cosYaw * vertex.z;
-
     float vertical =
         sinPitch * forward - cosPitch * vertex.y;
-
     float depth =
         cosPitch * forward + sinPitch * vertex.y;
 
@@ -231,30 +224,23 @@ void drawTriangle(
     std::uint32_t color) {
 
     float area = edgeFunction(a, b, c.x, c.y);
-
     if (std::abs(area) < 0.00001f) {
         return;
     }
 
     int minX = std::max(0, static_cast<int>(std::floor(
         std::min({a.x, b.x, c.x}))));
-
     int maxX = std::min(int(WIDTH) - 1,
-        static_cast<int>(std::ceil(
-            std::max({a.x, b.x, c.x}))));
-
+        static_cast<int>(std::ceil(std::max({a.x, b.x, c.x}))));
     int minY = std::max(0, static_cast<int>(std::floor(
         std::min({a.y, b.y, c.y}))));
-
     int maxY = std::min(int(HEIGHT) - 1,
-        static_cast<int>(std::ceil(
-            std::max({a.y, b.y, c.y}))));
+        static_cast<int>(std::ceil(std::max({a.y, b.y, c.y}))));
 
     for (int y = minY; y <= maxY; ++y) {
         for (int x = minX; x <= maxX; ++x) {
             float px = x + 0.5f;
             float py = y + 0.5f;
-
             float wa = edgeFunction(b, c, px, py) / area;
             float wb = edgeFunction(c, a, px, py) / area;
             float wc = edgeFunction(a, b, px, py) / area;
@@ -265,7 +251,6 @@ void drawTriangle(
 
             float depth =
                 wa * a.depth + wb * b.depth + wc * c.depth;
-
             unsigned index =
                 static_cast<unsigned>(y) * WIDTH
                 + static_cast<unsigned>(x);
@@ -280,7 +265,6 @@ void drawTriangle(
 
 Color mixColor(const Color& a, const Color& b, float t) {
     t = std::clamp(t, 0.0f, 1.0f);
-
     return {
         interpolate(a.r, b.r, t),
         interpolate(a.g, b.g, t),
@@ -288,11 +272,9 @@ Color mixColor(const Color& a, const Color& b, float t) {
     };
 }
 
-// Smooth transition between two thresholds.
 float transition(float low, float high, float value) {
     float t = std::clamp(
         (value - low) / (high - low), 0.0f, 1.0f);
-
     return smoothStep(t);
 }
 
@@ -305,13 +287,10 @@ Color terrainColor(float height, const Vertex& normal) {
     Color base = mixColor(
         sand, grass, transition(-0.4f, 0.15f, height));
 
-    // An upward normal has y=1; steep slopes have smaller y.
     float slope = 1.0f - std::clamp(normal.y, 0.0f, 1.0f);
-
     base = mixColor(
         base, rock, transition(0.18f, 0.55f, slope));
 
-    // Snow favors high, relatively gentle surfaces.
     float snowAmount =
         transition(0.8f, 1.5f, height)
         * (1.0f - transition(0.25f, 0.6f, slope));
@@ -333,14 +312,46 @@ std::uint32_t shadedColor(const Color& base,
         static_cast<unsigned>(std::lround(base.b * brightness)));
 }
 
-void renderMesh(
+void renderWater(
+    const CameraSettings& camera,
+    const WaterSettings& water,
+    std::vector<std::uint32_t>& pixels,
+    std::vector<float>& depthBuffer) {
+
+    if (!water.visible) {
+        return;
+    }
+
+    float halfSize = GRID_CELLS * GRID_SPACING / 2.0f;
+
+    const std::array<Vertex, 4> corners = {{
+        {-halfSize, water.level, -halfSize},
+        { halfSize, water.level, -halfSize},
+        {-halfSize, water.level,  halfSize},
+        { halfSize, water.level,  halfSize}
+    }};
+
+    ScreenPoint a = project(corners[0], camera);
+    ScreenPoint b = project(corners[1], camera);
+    ScreenPoint c = project(corners[2], camera);
+    ScreenPoint d = project(corners[3], camera);
+
+    std::uint32_t color = shadedColor(
+        {45.0f, 135.0f, 195.0f}, {0.0f, 1.0f, 0.0f});
+
+    // Water shares the terrain depth buffer.
+    drawTriangle(pixels, depthBuffer, a, c, b, color);
+    drawTriangle(pixels, depthBuffer, b, c, d, color);
+}
+
+void renderScene(
     const Mesh& mesh,
     const CameraSettings& camera,
+    const WaterSettings& water,
     std::vector<std::uint32_t>& pixels,
     std::vector<float>& depthBuffer) {
 
     std::fill(pixels.begin(), pixels.end(), MFB_RGB(25, 35, 50));
-
     std::fill(depthBuffer.begin(), depthBuffer.end(),
               -std::numeric_limits<float>::infinity());
 
@@ -358,32 +369,33 @@ void renderMesh(
 
         Vertex normal = faceNormal(a, b, c);
         float height = (a.y + b.y + c.y) / 3.0f;
-
         Color base = terrainColor(height, normal);
 
         drawTriangle(
-            pixels,
-            depthBuffer,
+            pixels, depthBuffer,
             projected[triangle[0]],
             projected[triangle[1]],
             projected[triangle[2]],
             shadedColor(base, normal));
     }
+
+    renderWater(camera, water, pixels, depthBuffer);
 }
 
 InputChanges handleInput(
     mfb_window* window,
     TerrainSettings& settings,
     CameraSettings& camera,
-    std::array<bool, 15>& previous) {
+    WaterSettings& water,
+    std::array<bool, 18>& previous) {
 
     const auto* keys = mfb_get_key_buffer(window);
-
-    const std::array<mfb_key, 15> controls = {
+    const std::array<mfb_key, 18> controls = {
         KB_KEY_UP, KB_KEY_DOWN, KB_KEY_RIGHT, KB_KEY_LEFT,
         KB_KEY_N, KB_KEY_O, KB_KEY_P, KB_KEY_R,
         KB_KEY_A, KB_KEY_D, KB_KEY_W, KB_KEY_S,
-        KB_KEY_Q, KB_KEY_E, KB_KEY_C
+        KB_KEY_Q, KB_KEY_E, KB_KEY_C,
+        KB_KEY_M, KB_KEY_J, KB_KEY_K
     };
 
     InputChanges changed;
@@ -394,8 +406,10 @@ InputChanges handleInput(
         if (down && !previous[i]) {
             if (i < 8) {
                 changed.terrain = true;
-            } else {
+            } else if (i < 15) {
                 changed.camera = true;
+            } else {
+                changed.water = true;
             }
 
             switch (controls[i]) {
@@ -428,6 +442,8 @@ InputChanges handleInput(
                     break;
                 case KB_KEY_R:
                     settings = TerrainSettings{};
+                    water = WaterSettings{};
+                    changed.water = true;
                     break;
                 case KB_KEY_A:
                     camera.yaw -= PI / 18.0f;
@@ -453,6 +469,17 @@ InputChanges handleInput(
                     break;
                 case KB_KEY_C:
                     camera = CameraSettings{};
+                    break;
+                case KB_KEY_M:
+                    water.visible = !water.visible;
+                    break;
+                case KB_KEY_J:
+                    water.level =
+                        std::max(water.level - 0.25f, -3.0f);
+                    break;
+                case KB_KEY_K:
+                    water.level =
+                        std::min(water.level + 0.25f, 3.0f);
                     break;
                 default:
                     break;
@@ -483,35 +510,42 @@ void printCamera(const CameraSettings& camera) {
         camera.scale);
 }
 
+void printWater(const WaterSettings& water) {
+    std::printf("Water: %s | level=%.2f\n",
+                water.visible ? "ON" : "OFF", water.level);
+}
+
 int main() {
     mfb_window* window = mfb_open("Terrain Lab", WIDTH, HEIGHT);
-
     if (!window) {
         std::fprintf(stderr, "Failed to open Terrain Lab window.\n");
         return 1;
     }
 
-    Mesh mesh = createGrid(64, 0.25f);
+    Mesh mesh = createGrid(GRID_CELLS, GRID_SPACING);
     TerrainSettings settings;
     CameraSettings camera;
+    WaterSettings water;
 
-    std::array<bool, 15> previousKeys{};
+    std::array<bool, 18> previousKeys{};
     std::vector<std::uint32_t> pixels(WIDTH * HEIGHT);
     std::vector<float> depthBuffer(WIDTH * HEIGHT);
 
     std::puts("UP/DOWN: height | RIGHT/LEFT: frequency");
-    std::puts("N: next seed | O/P: more/fewer octaves | R: reset terrain");
+    std::puts("N: next seed | O/P: more/fewer octaves");
     std::puts("A/D: rotate | W/S: tilt | Q/E: zoom out/in");
-    std::puts("C: reset camera | Press and release each key");
-    std::puts("Renderer: depth + lighting + height/slope colors");
+    std::puts("M: toggle water | J/K: lower/raise water");
+    std::puts("R: reset terrain and water | C: reset camera");
+    std::puts("Press and release each key");
 
     std::printf("Grid: %zu vertices, %zu triangles\n",
                 mesh.vertices.size(), mesh.triangles.size());
 
     applyNoise(mesh, settings);
-    renderMesh(mesh, camera, pixels, depthBuffer);
+    renderScene(mesh, camera, water, pixels, depthBuffer);
     printSettings(settings);
     printCamera(camera);
+    printWater(water);
 
     do {
         if (mfb_update_ex(window, pixels.data(), WIDTH, HEIGHT)
@@ -520,19 +554,21 @@ int main() {
         }
 
         InputChanges changed = handleInput(
-            window, settings, camera, previousKeys);
+            window, settings, camera, water, previousKeys);
 
         if (changed.terrain) {
             applyNoise(mesh, settings);
             printSettings(settings);
         }
-
         if (changed.camera) {
             printCamera(camera);
         }
+        if (changed.water) {
+            printWater(water);
+        }
 
-        if (changed.terrain || changed.camera) {
-            renderMesh(mesh, camera, pixels, depthBuffer);
+        if (changed.terrain || changed.camera || changed.water) {
+            renderScene(mesh, camera, water, pixels, depthBuffer);
         }
     } while (mfb_wait_sync(window));
 
