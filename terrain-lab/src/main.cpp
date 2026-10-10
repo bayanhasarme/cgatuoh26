@@ -1,4 +1,6 @@
 #include <MiniFB.h>
+#include "hud.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -339,13 +341,13 @@ void renderWater(
     std::uint32_t color = shadedColor(
         {45.0f, 135.0f, 195.0f}, {0.0f, 1.0f, 0.0f});
 
-    // Water shares the terrain depth buffer.
     drawTriangle(pixels, depthBuffer, a, c, b, color);
     drawTriangle(pixels, depthBuffer, b, c, d, color);
 }
 
 void renderScene(
     const Mesh& mesh,
+    const TerrainSettings& settings,
     const CameraSettings& camera,
     const WaterSettings& water,
     std::vector<std::uint32_t>& pixels,
@@ -380,6 +382,16 @@ void renderScene(
     }
 
     renderWater(camera, water, pixels, depthBuffer);
+
+    // Draw the interface last so it stays readable over the scene.
+    hud::draw(
+        pixels, WIDTH, HEIGHT,
+        static_cast<unsigned>(settings.seed),
+        settings.amplitude, settings.frequency, settings.octaves,
+        water.visible, water.level,
+        camera.yaw * 180.0f / PI,
+        camera.pitch * 180.0f / PI,
+        camera.scale);
 }
 
 InputChanges handleInput(
@@ -542,7 +554,7 @@ int main() {
                 mesh.vertices.size(), mesh.triangles.size());
 
     applyNoise(mesh, settings);
-    renderScene(mesh, camera, water, pixels, depthBuffer);
+    renderScene(mesh, settings, camera, water, pixels, depthBuffer);
     printSettings(settings);
     printCamera(camera);
     printWater(water);
@@ -568,7 +580,8 @@ int main() {
         }
 
         if (changed.terrain || changed.camera || changed.water) {
-            renderScene(mesh, camera, water, pixels, depthBuffer);
+            renderScene(
+                mesh, settings, camera, water, pixels, depthBuffer);
         }
     } while (mfb_wait_sync(window));
 
