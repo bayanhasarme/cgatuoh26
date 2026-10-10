@@ -44,6 +44,38 @@ struct InputChanges {
     bool camera = false;
 };
 
+Vertex subtract(const Vertex& a, const Vertex& b) {
+    return {a.x - b.x, a.y - b.y, a.z - b.z};
+}
+
+Vertex cross(const Vertex& a, const Vertex& b) {
+    return {
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x
+    };
+}
+
+float dot(const Vertex& a, const Vertex& b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+Vertex normalize(const Vertex& v) {
+    float length = std::sqrt(dot(v, v));
+
+    if (length < 0.000001f) {
+        return {0.0f, 1.0f, 0.0f};
+    }
+
+    return {v.x / length, v.y / length, v.z / length};
+}
+
+Vertex faceNormal(const Vertex& a,
+                  const Vertex& b,
+                  const Vertex& c) {
+    return normalize(cross(subtract(b, a), subtract(c, a)));
+}
+
 Mesh createGrid(unsigned cells, float spacing) {
     Mesh mesh;
     float halfSize = cells * spacing / 2.0f;
@@ -67,6 +99,7 @@ Mesh createGrid(unsigned cells, float spacing) {
             unsigned c = a + rowSize;
             unsigned d = c + 1;
 
+            // This winding gives upward-facing normals.
             mesh.triangles.push_back({a, c, b});
             mesh.triangles.push_back({b, c, d});
         }
@@ -169,7 +202,6 @@ ScreenPoint project(const Vertex& vertex,
     float vertical =
         sinPitch * forward - cosPitch * vertex.y;
 
-    // Larger depth means closer to this orthographic camera.
     float depth =
         cosPitch * forward + sinPitch * vertex.y;
 
@@ -180,7 +212,6 @@ ScreenPoint project(const Vertex& vertex,
     };
 }
 
-// Signed area used to compute barycentric coordinates.
 float edgeFunction(const ScreenPoint& a,
                    const ScreenPoint& b,
                    float x, float y) {
@@ -218,7 +249,6 @@ void drawTriangle(
 
     for (int y = minY; y <= maxY; ++y) {
         for (int x = minX; x <= maxX; ++x) {
-            // Sample at the center of the pixel.
             float px = x + 0.5f;
             float py = y + 0.5f;
 
@@ -226,7 +256,6 @@ void drawTriangle(
             float wb = edgeFunction(c, a, px, py) / area;
             float wc = edgeFunction(a, b, px, py) / area;
 
-            // This works for both triangle winding directions.
             if (wa < 0.0f || wb < 0.0f || wc < 0.0f) {
                 continue;
             }
@@ -246,17 +275,21 @@ void drawTriangle(
     }
 }
 
-// Temporary deterministic colors to make triangles visible.
-std::uint32_t triangleColor(unsigned index) {
-    std::uint32_t hash = index * 1664525u + 1013904223u;
-    hash ^= hash >> 16;
+// Flat shading: one normal and one color per triangle.
+std::uint32_t shadedColor(const Vertex& normal) {
+    // Direction from the surface toward the light.
+    static const Vertex lightDirection =
+        normalize({-0.6f, 1.0f, -0.4f});
 
-    unsigned variation = hash % 65u;
+    float diffuse = std::max(0.0f, dot(normal, lightDirection));
+
+    // Ambient light keeps slopes facing away from the light visible.
+    float brightness = 0.25f + 0.75f * diffuse;
 
     return MFB_RGB(
-        55u + variation / 2u,
-        135u + variation,
-        100u + variation / 2u);
+        static_cast<unsigned>(std::lround(90.0f * brightness)),
+        static_cast<unsigned>(std::lround(190.0f * brightness)),
+        static_cast<unsigned>(std::lround(125.0f * brightness)));
 }
 
 void renderMesh(
@@ -277,8 +310,12 @@ void renderMesh(
         projected.push_back(project(vertex, camera));
     }
 
-    for (unsigned i = 0; i < mesh.triangles.size(); ++i) {
-        const auto& triangle = mesh.triangles[i];
+    for (const auto& triangle : mesh.triangles) {
+        const Vertex& a = mesh.vertices[triangle[0]];
+        const Vertex& b = mesh.vertices[triangle[1]];
+        const Vertex& c = mesh.vertices[triangle[2]];
+
+        Vertex normal = faceNormal(a, b, c);
 
         drawTriangle(
             pixels,
@@ -286,7 +323,7 @@ void renderMesh(
             projected[triangle[0]],
             projected[triangle[1]],
             projected[triangle[2]],
-            triangleColor(i));
+            shadedColor(normal));
     }
 }
 
@@ -422,7 +459,7 @@ int main() {
     std::puts("N: next seed | O/P: more/fewer octaves | R: reset terrain");
     std::puts("A/D: rotate | W/S: tilt | Q/E: zoom out/in");
     std::puts("C: reset camera | Press and release each key");
-    std::puts("Renderer: filled triangles with depth testing");
+    std::puts("Renderer: depth testing + flat Lambert shading");
 
     std::printf("Grid: %zu vertices, %zu triangles\n",
                 mesh.vertices.size(), mesh.triangles.size());
