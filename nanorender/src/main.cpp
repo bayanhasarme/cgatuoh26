@@ -164,6 +164,7 @@ static int g_enable_diffuse_lighting = 1;
 
 static int g_enable_specular_lighting = 1;
 static int g_show_light_vectors = 0;
+static int g_use_phong_shading = 1;
 
 static uint32_t ambient_face_color() {
 
@@ -661,7 +662,7 @@ static glm::vec3 safe_unit_vector(const glm::vec3 &v) {
 
 // HW5 Part 2: all lighting vectors and positions are in world space.
 
-// Evaluate once per ORIGINAL face, so every rasterized pixel shares its color.
+// Shared Phong reflection equation: evaluated per face in Flat mode, per pixel in Phong mode.
 
 // Incident direction points INTO the surface: I = -L.
 static glm::vec3 reflection_direction(const glm::vec3 &incident,
@@ -1313,9 +1314,17 @@ static double triangle_edge(const glm::vec2 &a, const glm::vec2 &b,
 
 }
 
+// Attributes survive clipping and are perspective-correctly interpolated.
+struct ShadingVertex {
+  glm::vec4 clip;
+  glm::vec3 world_position;
+  glm::vec3 world_normal;
+};
+
 static void fill_screen_triangle(const glm::vec3 &a, const glm::vec3 &b,
 
-                                 const glm::vec3 &c, uint32_t color) {
+                                 const glm::vec3 &c, uint32_t color,
+                                 const std::array<ShadingVertex, 3> &attributes) {
 
   const glm::vec2 pa(a), pb(b), pc(c);
 
@@ -1381,9 +1390,27 @@ static void fill_screen_triangle(const glm::vec3 &a, const glm::vec3 &b,
 
             depth >= g_z_buffer[index]) continue;
 
+        uint32_t pixel_color = color;
+        if (g_use_phong_shading && g_enable_ambient_lighting && !g_show_depth_map) {
+          // Screen weights must be corrected by 1/W for world attributes.
+          const double qa = alpha / attributes[0].clip.w;
+          const double qb = beta / attributes[1].clip.w;
+          const double qc = gamma / attributes[2].clip.w;
+          const double sum = qa + qb + qc;
+          if (!std::isfinite(sum) || sum <= 0.0) continue;
+          const float wa = float(qa / sum), wb = float(qb / sum), wc = float(qc / sum);
+          const glm::vec3 position = wa * attributes[0].world_position +
+                                    wb * attributes[1].world_position +
+                                    wc * attributes[2].world_position;
+          const glm::vec3 normal = safe_unit_vector(
+              wa * attributes[0].world_normal + wb * attributes[1].world_normal +
+              wc * attributes[2].world_normal);
+          pixel_color = flat_face_color(position, normal);
+        }
+
         g_z_buffer[index] = depth;
 
-        g_buffer[index] = color;
+        g_buffer[index] = pixel_color;
 
       }
 
@@ -1394,45 +1421,49 @@ static void fill_screen_triangle(const glm::vec3 &a, const glm::vec3 &b,
 }
 
 static void draw_filled_triangle(const glm::vec3 &a, const glm::vec3 &b,
-
-                                 const glm::vec3 &c, uint32_t color) {
-
+                                 const glm::vec3 &c, uint32_t color,
+                                 const glm::vec3 &na, const glm::vec3 &nb,
+                                 const glm::vec3 &nc) {
   const glm::mat4 pv = g_projection_matrix * g_view_matrix;
-
-  const auto polygon = clip_triangle_polygon(
-
-      pv * glm::vec4(a, 1), pv * glm::vec4(b, 1), pv * glm::vec4(c, 1));
-
-  if (polygon.size() < 3) return;
-
-  std::vector<glm::vec3> screen;
-
-  screen.reserve(polygon.size());
-
-  for (const glm::vec4 &clip : polygon) {
-
-    if (!finite_clip_point(clip) || clip.w <= 0.000001f) return;
-
-    const glm::vec3 ndc = glm::vec3(clip) / clip.w;
-
-    screen.emplace_back(
-
-        VIEW_X + (ndc.x + 1.0f) * 0.5f * VIEW_WIDTH,
-
-        VIEW_Y + (ndc.y + 1.0f) * 0.5f * VIEW_HEIGHT,
-
-        ndc.z * 0.5f + 0.5f);
-
+  std::vector<ShadingVertex> polygon{
+      {pv * glm::vec4(a, 1), a, na},
+      {pv * glm::vec4(b, 1), b, nb},
+      {pv * glm::vec4(c, 1), c, nc}};
+  for (const auto &vertex : polygon)
+    if (!finite_clip_point(vertex.clip)) return;
+  for (int plane = 0; plane < 6 && !polygon.empty(); ++plane) {
+    std::vector<ShadingVertex> output;
+    ShadingVertex previous = polygon.back();
+    float previous_distance = clip_plane_distance(previous.clip, plane);
+    for (const ShadingVertex &current : polygon) {
+      const float distance = clip_plane_distance(current.clip, plane);
+      if ((previous_distance >= 0.0f) != (distance >= 0.0f)) {
+        const float t = previous_distance / (previous_distance - distance);
+        // Do not normalize normals during clipping: keep linear attributes.
+        output.push_back({
+            previous.clip + t * (current.clip - previous.clip),
+            previous.world_position + t * (current.world_position - previous.world_position),
+            previous.world_normal + t * (current.world_normal - previous.world_normal)});
+      }
+      if (distance >= 0.0f) output.push_back(current);
+      previous = current;
+      previous_distance = distance;
+    }
+    polygon = std::move(output);
   }
-
-  // Frustum clipping can produce a polygon: triangulate it as a fan.
-
-  // All pieces retain the original face's stable color.
-
-  for (size_t i = 1; i + 1 < screen.size(); ++i)
-
-    fill_screen_triangle(screen[0], screen[i], screen[i + 1], color);
-
+  if (polygon.size() < 3) return;
+  std::vector<glm::vec3> screen;
+  for (const auto &vertex : polygon) {
+    if (!finite_clip_point(vertex.clip) || vertex.clip.w <= 0.000001f) return;
+    const glm::vec3 ndc = glm::vec3(vertex.clip) / vertex.clip.w;
+    screen.emplace_back(VIEW_X + (ndc.x + 1.0f) * 0.5f * VIEW_WIDTH,
+                        VIEW_Y + (ndc.y + 1.0f) * 0.5f * VIEW_HEIGHT,
+                        ndc.z * 0.5f + 0.5f);
+  }
+  for (size_t i = 1; i + 1 < screen.size(); ++i) {
+    const std::array<ShadingVertex, 3> attributes{polygon[0], polygon[i], polygon[i + 1]};
+    fill_screen_triangle(screen[0], screen[i], screen[i + 1], color, attributes);
+  }
 }
 
 // Display the actual stored depths with contrast stretched over visible pixels.
@@ -1612,7 +1643,10 @@ static void draw_mesh_wireframe() {
 
                                 normal_matrix * g_mesh.face_normals[i])
 
-              : g_mesh.face_colors[i]);
+              : g_mesh.face_colors[i],
+          safe_unit_vector(normal_matrix * g_mesh.vertex_normals[face.indices[0]]),
+          safe_unit_vector(normal_matrix * g_mesh.vertex_normals[face.indices[1]]),
+          safe_unit_vector(normal_matrix * g_mesh.vertex_normals[face.indices[2]]));
 
     }
 
@@ -1973,11 +2007,12 @@ static void lighting_window(mu_Context *ctx) {
   if (mu_begin_window_ex(ctx, "HW5 Lighting", mu_rect(20, 420, 370, 260), options)) {
     int full_width[] = {-1};
     mu_layout_row(ctx, 1, full_width, 0);
-    mu_label(ctx, "HW5 Part 3: Specular (RGB colors)");
-    int toggle_widths[] = {180, -1};
-    mu_layout_row(ctx, 2, toggle_widths, 0);
+    mu_label(ctx, "HW5 Part 4: Phong / Flat (RGB)");
+    int toggle_widths[] = {110, 110, -1};
+    mu_layout_row(ctx, 3, toggle_widths, 0);
     mu_checkbox(ctx, "Lighting", &g_enable_ambient_lighting);
     mu_checkbox(ctx, "Specular", &g_enable_specular_lighting);
+    mu_checkbox(ctx, "Phong", &g_use_phong_shading);
     lighting_vector_row(ctx, "Position XYZ", g_light.position, -10.0f, 10.0f);
     mu_layout_row(ctx, 1, full_width, 0);
     if (mu_button(ctx, g_enable_diffuse_lighting
