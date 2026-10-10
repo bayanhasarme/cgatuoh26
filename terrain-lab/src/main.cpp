@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <vector>
 
 constexpr unsigned WIDTH = 1000;
@@ -15,7 +16,7 @@ struct Vertex {
 };
 
 struct ScreenPoint {
-    int x, y;
+    float x, y, depth;
 };
 
 struct Mesh {
@@ -152,8 +153,6 @@ void applyNoise(Mesh& mesh, const TerrainSettings& settings) {
     }
 }
 
-// Rotate the terrain into camera coordinates,
-// then use an orthographic projection.
 ScreenPoint project(const Vertex& vertex,
                     const CameraSettings& camera) {
     float cosYaw = std::cos(camera.yaw);
@@ -170,47 +169,124 @@ ScreenPoint project(const Vertex& vertex,
     float vertical =
         sinPitch * forward - cosPitch * vertex.y;
 
+    // Larger depth means closer to this orthographic camera.
+    float depth =
+        cosPitch * forward + sinPitch * vertex.y;
+
     return {
-        static_cast<int>(std::lround(
-            WIDTH / 2.0f + horizontal * camera.scale)),
-        static_cast<int>(std::lround(
-            HEIGHT / 2.0f + vertical * camera.scale))
+        WIDTH / 2.0f + horizontal * camera.scale,
+        HEIGHT / 2.0f + vertical * camera.scale,
+        depth
     };
 }
 
-void drawLine(std::vector<std::uint32_t>& pixels,
-              ScreenPoint a, ScreenPoint b) {
-    int dx = b.x - a.x;
-    int dy = b.y - a.y;
-    int steps = std::max(std::abs(dx), std::abs(dy));
+// Signed area used to compute barycentric coordinates.
+float edgeFunction(const ScreenPoint& a,
+                   const ScreenPoint& b,
+                   float x, float y) {
+    return (b.x - a.x) * (y - a.y)
+         - (b.y - a.y) * (x - a.x);
+}
 
-    for (int i = 0; i <= steps; ++i) {
-        float t = steps == 0 ? 0.0f : float(i) / steps;
-        int x = static_cast<int>(std::lround(a.x + dx * t));
-        int y = static_cast<int>(std::lround(a.y + dy * t));
+void drawTriangle(
+    std::vector<std::uint32_t>& pixels,
+    std::vector<float>& depthBuffer,
+    const ScreenPoint& a,
+    const ScreenPoint& b,
+    const ScreenPoint& c,
+    std::uint32_t color) {
 
-        if (x >= 0 && x < int(WIDTH)
-            && y >= 0 && y < int(HEIGHT)) {
-            pixels[y * WIDTH + x] = MFB_RGB(100, 210, 170);
+    float area = edgeFunction(a, b, c.x, c.y);
+
+    if (std::abs(area) < 0.00001f) {
+        return;
+    }
+
+    int minX = std::max(0, static_cast<int>(std::floor(
+        std::min({a.x, b.x, c.x}))));
+
+    int maxX = std::min(int(WIDTH) - 1,
+        static_cast<int>(std::ceil(
+            std::max({a.x, b.x, c.x}))));
+
+    int minY = std::max(0, static_cast<int>(std::floor(
+        std::min({a.y, b.y, c.y}))));
+
+    int maxY = std::min(int(HEIGHT) - 1,
+        static_cast<int>(std::ceil(
+            std::max({a.y, b.y, c.y}))));
+
+    for (int y = minY; y <= maxY; ++y) {
+        for (int x = minX; x <= maxX; ++x) {
+            // Sample at the center of the pixel.
+            float px = x + 0.5f;
+            float py = y + 0.5f;
+
+            float wa = edgeFunction(b, c, px, py) / area;
+            float wb = edgeFunction(c, a, px, py) / area;
+            float wc = edgeFunction(a, b, px, py) / area;
+
+            // This works for both triangle winding directions.
+            if (wa < 0.0f || wb < 0.0f || wc < 0.0f) {
+                continue;
+            }
+
+            float depth =
+                wa * a.depth + wb * b.depth + wc * c.depth;
+
+            unsigned index =
+                static_cast<unsigned>(y) * WIDTH
+                + static_cast<unsigned>(x);
+
+            if (depth > depthBuffer[index]) {
+                depthBuffer[index] = depth;
+                pixels[index] = color;
+            }
         }
     }
 }
 
-void renderMesh(const Mesh& mesh,
-                const CameraSettings& camera,
-                std::vector<std::uint32_t>& pixels) {
+// Temporary deterministic colors to make triangles visible.
+std::uint32_t triangleColor(unsigned index) {
+    std::uint32_t hash = index * 1664525u + 1013904223u;
+    hash ^= hash >> 16;
+
+    unsigned variation = hash % 65u;
+
+    return MFB_RGB(
+        55u + variation / 2u,
+        135u + variation,
+        100u + variation / 2u);
+}
+
+void renderMesh(
+    const Mesh& mesh,
+    const CameraSettings& camera,
+    std::vector<std::uint32_t>& pixels,
+    std::vector<float>& depthBuffer) {
+
     std::fill(pixels.begin(), pixels.end(), MFB_RGB(25, 35, 50));
 
-    for (const auto& triangle : mesh.triangles) {
-        for (unsigned edge = 0; edge < 3; ++edge) {
-            ScreenPoint a = project(
-                mesh.vertices[triangle[edge]], camera);
+    std::fill(depthBuffer.begin(), depthBuffer.end(),
+              -std::numeric_limits<float>::infinity());
 
-            ScreenPoint b = project(
-                mesh.vertices[triangle[(edge + 1) % 3]], camera);
+    std::vector<ScreenPoint> projected;
+    projected.reserve(mesh.vertices.size());
 
-            drawLine(pixels, a, b);
-        }
+    for (const auto& vertex : mesh.vertices) {
+        projected.push_back(project(vertex, camera));
+    }
+
+    for (unsigned i = 0; i < mesh.triangles.size(); ++i) {
+        const auto& triangle = mesh.triangles[i];
+
+        drawTriangle(
+            pixels,
+            depthBuffer,
+            projected[triangle[0]],
+            projected[triangle[1]],
+            projected[triangle[2]],
+            triangleColor(i));
     }
 }
 
@@ -246,72 +322,57 @@ InputChanges handleInput(
                     settings.amplitude =
                         std::min(settings.amplitude + 0.5f, 6.0f);
                     break;
-
                 case KB_KEY_DOWN:
                     settings.amplitude =
                         std::max(settings.amplitude - 0.5f, 0.0f);
                     break;
-
                 case KB_KEY_RIGHT:
                     settings.frequency =
                         std::min(settings.frequency + 0.05f, 0.5f);
                     break;
-
                 case KB_KEY_LEFT:
                     settings.frequency =
                         std::max(settings.frequency - 0.05f, 0.05f);
                     break;
-
                 case KB_KEY_N:
                     ++settings.seed;
                     break;
-
                 case KB_KEY_O:
                     settings.octaves =
                         std::min(settings.octaves + 1, 4u);
                     break;
-
                 case KB_KEY_P:
                     settings.octaves =
                         std::max(settings.octaves - 1, 1u);
                     break;
-
                 case KB_KEY_R:
                     settings = TerrainSettings{};
                     break;
-
                 case KB_KEY_A:
                     camera.yaw -= PI / 18.0f;
                     break;
-
                 case KB_KEY_D:
                     camera.yaw += PI / 18.0f;
                     break;
-
                 case KB_KEY_W:
                     camera.pitch =
                         std::min(camera.pitch + PI / 36.0f, 1.4f);
                     break;
-
                 case KB_KEY_S:
                     camera.pitch =
                         std::max(camera.pitch - PI / 36.0f, 0.15f);
                     break;
-
                 case KB_KEY_Q:
                     camera.scale =
                         std::max(camera.scale - 2.0f, 12.0f);
                     break;
-
                 case KB_KEY_E:
                     camera.scale =
                         std::min(camera.scale + 2.0f, 45.0f);
                     break;
-
                 case KB_KEY_C:
                     camera = CameraSettings{};
                     break;
-
                 default:
                     break;
             }
@@ -352,19 +413,22 @@ int main() {
     Mesh mesh = createGrid(64, 0.25f);
     TerrainSettings settings;
     CameraSettings camera;
+
     std::array<bool, 15> previousKeys{};
     std::vector<std::uint32_t> pixels(WIDTH * HEIGHT);
+    std::vector<float> depthBuffer(WIDTH * HEIGHT);
 
     std::puts("UP/DOWN: height | RIGHT/LEFT: frequency");
     std::puts("N: next seed | O/P: more/fewer octaves | R: reset terrain");
     std::puts("A/D: rotate | W/S: tilt | Q/E: zoom out/in");
     std::puts("C: reset camera | Press and release each key");
+    std::puts("Renderer: filled triangles with depth testing");
 
     std::printf("Grid: %zu vertices, %zu triangles\n",
                 mesh.vertices.size(), mesh.triangles.size());
 
     applyNoise(mesh, settings);
-    renderMesh(mesh, camera, pixels);
+    renderMesh(mesh, camera, pixels, depthBuffer);
     printSettings(settings);
     printCamera(camera);
 
@@ -387,7 +451,7 @@ int main() {
         }
 
         if (changed.terrain || changed.camera) {
-            renderMesh(mesh, camera, pixels);
+            renderMesh(mesh, camera, pixels, depthBuffer);
         }
     } while (mfb_wait_sync(window));
 
