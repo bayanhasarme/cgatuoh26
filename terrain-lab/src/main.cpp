@@ -22,7 +22,7 @@ struct Mesh {
     std::vector<std::array<unsigned, 3>> triangles;
 };
 
-// Each square in the grid contains two triangles.
+// Each square contains two triangles with shared vertices.
 Mesh createGrid(unsigned cells, float spacing) {
     Mesh mesh;
     float halfSize = cells * spacing / 2.0f;
@@ -64,7 +64,7 @@ void applyHill(Mesh& mesh, float height, float radius) {
     }
 }
 
-// Deterministic value in [-1, 1] for an integer grid position.
+// Deterministic value in [-1, 1] at an integer position.
 float latticeValue(int x, int z, std::uint32_t seed) {
     std::uint32_t hash =
         static_cast<std::uint32_t>(x) * 374761393u
@@ -82,12 +82,11 @@ float interpolate(float a, float b, float t) {
     return a + (b - a) * t;
 }
 
-// Smooth interpolation with zero slope at both ends.
 float smoothStep(float t) {
     return t * t * (3.0f - 2.0f * t);
 }
 
-// Blend the values at the four corners around the sample.
+// Smoothly blend four neighboring lattice values.
 float valueNoise(float x, float z, std::uint32_t seed) {
     int x0 = static_cast<int>(std::floor(x));
     int z0 = static_cast<int>(std::floor(z));
@@ -108,13 +107,39 @@ float valueNoise(float x, float z, std::uint32_t seed) {
     return interpolate(top, bottom, tz);
 }
 
+// Combine increasingly fine layers of noise.
+// Normalization keeps the result within [-1, 1].
+float fractalNoise(float x, float z, std::uint32_t seed,
+                   unsigned octaves, float persistence,
+                   float lacunarity) {
+    float total = 0.0f;
+    float weight = 1.0f;
+    float totalWeight = 0.0f;
+
+    for (unsigned layer = 0; layer < octaves; ++layer) {
+        total += weight * valueNoise(x, z, seed);
+        totalWeight += weight;
+
+        weight *= persistence;
+        x *= lacunarity;
+        z *= lacunarity;
+    }
+
+    return totalWeight > 0.0f ? total / totalWeight : 0.0f;
+}
+
 void applyNoise(Mesh& mesh, float amplitude,
-                float frequency, std::uint32_t seed) {
+                float frequency, std::uint32_t seed,
+                unsigned octaves, float persistence,
+                float lacunarity) {
     for (auto& vertex : mesh.vertices) {
-        vertex.y = amplitude * valueNoise(
+        vertex.y = amplitude * fractalNoise(
             vertex.x * frequency,
             vertex.z * frequency,
-            seed);
+            seed,
+            octaves,
+            persistence,
+            lacunarity);
     }
 }
 
@@ -155,14 +180,18 @@ int main() {
         return 1;
     }
 
-    // More vertices, while keeping the same terrain size.
     Mesh mesh = createGrid(64, 0.25f);
 
     constexpr float amplitude = 3.0f;
     constexpr float frequency = 0.3f;
     constexpr std::uint32_t seed = 42;
 
-    applyNoise(mesh, amplitude, frequency, seed);
+    constexpr unsigned octaves = 4;
+    constexpr float persistence = 0.5f;
+    constexpr float lacunarity = 2.0f;
+
+    applyNoise(mesh, amplitude, frequency, seed,
+               octaves, persistence, lacunarity);
 
     std::vector<std::uint32_t> pixels(
         WIDTH * HEIGHT, MFB_RGB(25, 35, 50));
@@ -178,8 +207,12 @@ int main() {
 
     std::printf("Grid: %zu vertices, %zu triangles\n",
                 mesh.vertices.size(), mesh.triangles.size());
-    std::printf("Value noise: seed=%u, amplitude=%.2f, frequency=%.2f\n",
-                static_cast<unsigned>(seed), amplitude, frequency);
+    std::printf("Fractal noise: seed=%u, octaves=%u\n",
+                static_cast<unsigned>(seed), octaves);
+    std::printf("Amplitude=%.2f, frequency=%.2f\n",
+                amplitude, frequency);
+    std::printf("Persistence=%.2f, lacunarity=%.2f\n",
+                persistence, lacunarity);
 
     do {
         if (mfb_update_ex(window, pixels.data(), WIDTH, HEIGHT)
