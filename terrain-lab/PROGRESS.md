@@ -1,84 +1,41 @@
 # Terrain Lab — Development Progress
 
-## 1. Application setup
+The planned implementation is complete. This document summarizes the development milestones.
 
-Created a standalone C++ application using MiniFB.
-The application opens a 1000 × 700 window and displays a pixel buffer.
+See [README.md](README.md) for build instructions and controls, and [REPORT.md](REPORT.md) for the final technical report.
 
-Build and run on Windows:
+## Completed milestones
 
-```powershell
-.\build_and_run.ps1
-```
+| Stage | Result | Screenshot |
+| --- | --- | --- |
+| Project setup | MiniFB window and Windows build script | — |
+| Flat grid | Grid vertices, triangle indices and wireframe rendering | [01-flat-grid.png](screenshots/01-flat-grid.png) |
+| Gaussian hill | A predictable height function for initial validation | [02-hill.png](screenshots/02-hill.png) |
+| Value noise | Deterministic terrain generated from a seed | [03-value-noise-seed42.png](screenshots/03-value-noise-seed42.png) |
+| Fractal noise | Multiple noise octaves with normalized contributions | [04-fractal-noise.png](screenshots/04-fractal-noise.png) |
+| Terrain controls | Keyboard adjustments and reset | [05-keyboard-seed43.png](screenshots/05-keyboard-seed43.png) |
+| Camera | Orthographic rotation, tilt and zoom | [06-camera-view.png](screenshots/06-camera-view.png) |
+| Filled rendering | Barycentric rasterization and depth testing | [07-filled-depth.png](screenshots/07-filled-depth.png) |
+| Lighting | Face normals, ambient light and Lambert diffuse shading | [08-flat-lighting.png](screenshots/08-flat-lighting.png) |
+| Terrain colors | Color blending based on height and slope | [09-height-slope-colors.png](screenshots/09-height-slope-colors.png) |
+| Water | Adjustable water plane using the shared depth buffer | [10-water.png](screenshots/10-water.png) |
+| Interface | On-screen settings and keyboard instructions | [11-hud.png](screenshots/11-hud.png) |
+| Documentation | Updated README and final technical report | — |
 
-## 2. Flat triangle grid
+## Validation
 
-Generated a regular grid on the XZ plane.
-Each cell contains two triangles, and neighboring triangles share vertices.
+Manual checks were performed during development.
 
-Initial configuration:
-- 16 × 16 cells.
-- 289 vertices.
-- 512 triangles.
+The final reset check confirmed that changing the seed and resetting restores seed 42 and the original terrain appearance.
 
-Rendered the triangle edges using line rasterization and a fixed
-angled projection.
+The final water check confirmed that raising the level from -0.25 to 0.00 increases water coverage, and lowering it restores the previous coverage.
 
-![Flat grid](screenshots/01-flat-grid.png)
+The on-screen values update with keyboard input.
 
-## 3. Gaussian hill
+Detailed validation results and implementation limitations are documented in REPORT.md.
 
-Assigned a height to each vertex using:
+## Development history
 
-y = H * exp(-(x² + z²) / (2 * r²))
+Implementation and documentation were recorded through separate Git commits.
 
-Used H = 5 and r = 3.
-The height is greatest at the center and decreases toward the edges.
-
-![Gaussian hill](screenshots/02-hill.png)
-
-## 4. Seeded value noise
-
-Implemented deterministic lattice values and smooth interpolation
-between neighboring values to generate hills and depressions.
-
-Parameters:
-- Seed: 42.
-- Amplitude: 3.
-- Frequency: 0.3.
-
-Increased grid resolution to 64 × 64 cells while keeping the terrain
-width and depth at 16 units:
-- 4,225 vertices.
-- 8,192 triangles.
-
-Visual check: running the application twice with the same parameters
-produced the same terrain appearance.
-
-![Value noise](screenshots/03-value-noise-seed42.png)
-
-## 5. Multi-octave noise
-
-Combined four layers of value noise.
-Each successive layer doubles the frequency and halves the weight.
-
-Parameters:
-- Octaves: 4.
-- Persistence: 0.5.
-- Lacunarity: 2.
-
-Divided the weighted sum by the sum of weights to keep the noise
-within the range [-1, 1].
-
-![Multi-octave noise](screenshots/04-fractal-noise.png)
-
-## Current limitations
-
-- The view is fixed.
-- Terrain parameters are currently set in the source code.
-- Rendering displays all triangle edges, including hidden edges.
-- Filled surfaces, depth testing, lighting and water are not yet implemented.
-
-## Next step
-
-Add keyboard controls to change terrain parameters during execution.
+Earlier versions of this document are preserved in Git history.
