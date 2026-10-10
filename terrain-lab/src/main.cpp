@@ -19,6 +19,10 @@ struct ScreenPoint {
     float x, y, depth;
 };
 
+struct Color {
+    float r, g, b;
+};
+
 struct Mesh {
     std::vector<Vertex> vertices;
     std::vector<std::array<unsigned, 3>> triangles;
@@ -99,7 +103,6 @@ Mesh createGrid(unsigned cells, float spacing) {
             unsigned c = a + rowSize;
             unsigned d = c + 1;
 
-            // This winding gives upward-facing normals.
             mesh.triangles.push_back({a, c, b});
             mesh.triangles.push_back({b, c, d});
         }
@@ -275,21 +278,59 @@ void drawTriangle(
     }
 }
 
-// Flat shading: one normal and one color per triangle.
-std::uint32_t shadedColor(const Vertex& normal) {
-    // Direction from the surface toward the light.
+Color mixColor(const Color& a, const Color& b, float t) {
+    t = std::clamp(t, 0.0f, 1.0f);
+
+    return {
+        interpolate(a.r, b.r, t),
+        interpolate(a.g, b.g, t),
+        interpolate(a.b, b.b, t)
+    };
+}
+
+// Smooth transition between two thresholds.
+float transition(float low, float high, float value) {
+    float t = std::clamp(
+        (value - low) / (high - low), 0.0f, 1.0f);
+
+    return smoothStep(t);
+}
+
+Color terrainColor(float height, const Vertex& normal) {
+    const Color sand = {194.0f, 174.0f, 118.0f};
+    const Color grass = {75.0f, 155.0f, 80.0f};
+    const Color rock = {135.0f, 130.0f, 125.0f};
+    const Color snow = {235.0f, 240.0f, 245.0f};
+
+    Color base = mixColor(
+        sand, grass, transition(-0.4f, 0.15f, height));
+
+    // An upward normal has y=1; steep slopes have smaller y.
+    float slope = 1.0f - std::clamp(normal.y, 0.0f, 1.0f);
+
+    base = mixColor(
+        base, rock, transition(0.18f, 0.55f, slope));
+
+    // Snow favors high, relatively gentle surfaces.
+    float snowAmount =
+        transition(0.8f, 1.5f, height)
+        * (1.0f - transition(0.25f, 0.6f, slope));
+
+    return mixColor(base, snow, snowAmount);
+}
+
+std::uint32_t shadedColor(const Color& base,
+                          const Vertex& normal) {
     static const Vertex lightDirection =
         normalize({-0.6f, 1.0f, -0.4f});
 
     float diffuse = std::max(0.0f, dot(normal, lightDirection));
-
-    // Ambient light keeps slopes facing away from the light visible.
     float brightness = 0.25f + 0.75f * diffuse;
 
     return MFB_RGB(
-        static_cast<unsigned>(std::lround(90.0f * brightness)),
-        static_cast<unsigned>(std::lround(190.0f * brightness)),
-        static_cast<unsigned>(std::lround(125.0f * brightness)));
+        static_cast<unsigned>(std::lround(base.r * brightness)),
+        static_cast<unsigned>(std::lround(base.g * brightness)),
+        static_cast<unsigned>(std::lround(base.b * brightness)));
 }
 
 void renderMesh(
@@ -316,6 +357,9 @@ void renderMesh(
         const Vertex& c = mesh.vertices[triangle[2]];
 
         Vertex normal = faceNormal(a, b, c);
+        float height = (a.y + b.y + c.y) / 3.0f;
+
+        Color base = terrainColor(height, normal);
 
         drawTriangle(
             pixels,
@@ -323,7 +367,7 @@ void renderMesh(
             projected[triangle[0]],
             projected[triangle[1]],
             projected[triangle[2]],
-            shadedColor(normal));
+            shadedColor(base, normal));
     }
 }
 
@@ -459,7 +503,7 @@ int main() {
     std::puts("N: next seed | O/P: more/fewer octaves | R: reset terrain");
     std::puts("A/D: rotate | W/S: tilt | Q/E: zoom out/in");
     std::puts("C: reset camera | Press and release each key");
-    std::puts("Renderer: depth testing + flat Lambert shading");
+    std::puts("Renderer: depth + lighting + height/slope colors");
 
     std::printf("Grid: %zu vertices, %zu triangles\n",
                 mesh.vertices.size(), mesh.triangles.size());
