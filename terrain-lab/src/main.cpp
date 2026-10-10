@@ -1,10 +1,10 @@
 #include <MiniFB.h>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <vector>
-#include <algorithm>
 
 constexpr unsigned WIDTH = 1000;
 constexpr unsigned HEIGHT = 700;
@@ -53,12 +53,27 @@ Mesh createGrid(unsigned cells, float spacing) {
     return mesh;
 }
 
+// Raise the grid into a smooth hill.
+// Height controls the peak; radius controls the width.
+void applyHill(Mesh& mesh, float height, float radius) {
+    for (auto& vertex : mesh.vertices) {
+        float distanceSquared =
+            vertex.x * vertex.x + vertex.z * vertex.z;
+
+        vertex.y = height * std::exp(
+            -distanceSquared / (2.0f * radius * radius));
+    }
+}
+
 // A fixed angled view of the 3D coordinates.
 ScreenPoint project(const Vertex& vertex) {
     return {
-        static_cast<int>(WIDTH / 2.0f + (vertex.x - vertex.z) * 22.0f),
-        static_cast<int>(HEIGHT / 2.0f
-            + (vertex.x + vertex.z) * 11.0f - vertex.y * 22.0f)
+        static_cast<int>(
+            WIDTH / 2.0f + (vertex.x - vertex.z) * 22.0f),
+        static_cast<int>(
+            HEIGHT / 2.0f
+            + (vertex.x + vertex.z) * 11.0f
+            - vertex.y * 22.0f)
     };
 }
 
@@ -73,7 +88,8 @@ void drawLine(std::vector<std::uint32_t>& pixels,
         int x = static_cast<int>(std::lround(a.x + dx * t));
         int y = static_cast<int>(std::lround(a.y + dy * t));
 
-        if (x >= 0 && x < int(WIDTH) && y >= 0 && y < int(HEIGHT)) {
+        if (x >= 0 && x < int(WIDTH) &&
+            y >= 0 && y < int(HEIGHT)) {
             pixels[y * WIDTH + x] = MFB_RGB(100, 210, 170);
         }
     }
@@ -87,6 +103,8 @@ int main() {
     }
 
     Mesh mesh = createGrid(16, 1.0f);
+    applyHill(mesh, 5.0f, 3.0f);
+
     std::vector<std::uint32_t> pixels(
         WIDTH * HEIGHT, MFB_RGB(25, 35, 50));
 
@@ -103,7 +121,8 @@ int main() {
                 mesh.vertices.size(), mesh.triangles.size());
 
     do {
-        if (mfb_update_ex(window, pixels.data(), WIDTH, HEIGHT) != STATE_OK) {
+        if (mfb_update_ex(window, pixels.data(), WIDTH, HEIGHT)
+            != STATE_OK) {
             break;
         }
     } while (mfb_wait_sync(window));
