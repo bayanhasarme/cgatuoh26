@@ -22,7 +22,15 @@ struct Mesh {
     std::vector<std::array<unsigned, 3>> triangles;
 };
 
-// Each square contains two triangles with shared vertices.
+struct TerrainSettings {
+    float amplitude = 3.0f;
+    float frequency = 0.3f;
+    std::uint32_t seed = 42;
+    unsigned octaves = 4;
+    float persistence = 0.5f;
+    float lacunarity = 2.0f;
+};
+
 Mesh createGrid(unsigned cells, float spacing) {
     Mesh mesh;
     float halfSize = cells * spacing / 2.0f;
@@ -53,18 +61,15 @@ Mesh createGrid(unsigned cells, float spacing) {
     return mesh;
 }
 
-// Keep the hill generator for later comparisons.
 void applyHill(Mesh& mesh, float height, float radius) {
     for (auto& vertex : mesh.vertices) {
         float distanceSquared =
             vertex.x * vertex.x + vertex.z * vertex.z;
-
         vertex.y = height * std::exp(
             -distanceSquared / (2.0f * radius * radius));
     }
 }
 
-// Deterministic value in [-1, 1] at an integer position.
 float latticeValue(int x, int z, std::uint32_t seed) {
     std::uint32_t hash =
         static_cast<std::uint32_t>(x) * 374761393u
@@ -86,64 +91,49 @@ float smoothStep(float t) {
     return t * t * (3.0f - 2.0f * t);
 }
 
-// Smoothly blend four neighboring lattice values.
 float valueNoise(float x, float z, std::uint32_t seed) {
     int x0 = static_cast<int>(std::floor(x));
     int z0 = static_cast<int>(std::floor(z));
-
     float tx = smoothStep(x - x0);
     float tz = smoothStep(z - z0);
 
     float top = interpolate(
         latticeValue(x0, z0, seed),
-        latticeValue(x0 + 1, z0, seed),
-        tx);
+        latticeValue(x0 + 1, z0, seed), tx);
 
     float bottom = interpolate(
         latticeValue(x0, z0 + 1, seed),
-        latticeValue(x0 + 1, z0 + 1, seed),
-        tx);
+        latticeValue(x0 + 1, z0 + 1, seed), tx);
 
     return interpolate(top, bottom, tz);
 }
 
-// Combine increasingly fine layers of noise.
-// Normalization keeps the result within [-1, 1].
-float fractalNoise(float x, float z, std::uint32_t seed,
-                   unsigned octaves, float persistence,
-                   float lacunarity) {
+float fractalNoise(float x, float z,
+                   const TerrainSettings& settings) {
     float total = 0.0f;
     float weight = 1.0f;
     float totalWeight = 0.0f;
 
-    for (unsigned layer = 0; layer < octaves; ++layer) {
-        total += weight * valueNoise(x, z, seed);
+    for (unsigned layer = 0; layer < settings.octaves; ++layer) {
+        total += weight * valueNoise(x, z, settings.seed);
         totalWeight += weight;
-
-        weight *= persistence;
-        x *= lacunarity;
-        z *= lacunarity;
+        weight *= settings.persistence;
+        x *= settings.lacunarity;
+        z *= settings.lacunarity;
     }
 
     return totalWeight > 0.0f ? total / totalWeight : 0.0f;
 }
 
-void applyNoise(Mesh& mesh, float amplitude,
-                float frequency, std::uint32_t seed,
-                unsigned octaves, float persistence,
-                float lacunarity) {
+void applyNoise(Mesh& mesh, const TerrainSettings& settings) {
     for (auto& vertex : mesh.vertices) {
-        vertex.y = amplitude * fractalNoise(
-            vertex.x * frequency,
-            vertex.z * frequency,
-            seed,
-            octaves,
-            persistence,
-            lacunarity);
+        vertex.y = settings.amplitude * fractalNoise(
+            vertex.x * settings.frequency,
+            vertex.z * settings.frequency,
+            settings);
     }
 }
 
-// A fixed angled view of the 3D coordinates.
 ScreenPoint project(const Vertex& vertex) {
     return {
         static_cast<int>(
@@ -173,6 +163,88 @@ void drawLine(std::vector<std::uint32_t>& pixels,
     }
 }
 
+void renderMesh(const Mesh& mesh,
+                std::vector<std::uint32_t>& pixels) {
+    // Clear the old image before drawing the updated terrain.
+    std::fill(pixels.begin(), pixels.end(), MFB_RGB(25, 35, 50));
+
+    for (const auto& triangle : mesh.triangles) {
+        for (unsigned edge = 0; edge < 3; ++edge) {
+            drawLine(
+                pixels,
+                project(mesh.vertices[triangle[edge]]),
+                project(mesh.vertices[triangle[(edge + 1) % 3]]));
+        }
+    }
+}
+
+// Each key changes a setting once per press.
+bool handleInput(mfb_window* window, TerrainSettings& settings,
+                 std::array<bool, 8>& previous) {
+    const auto* keys = mfb_get_key_buffer(window);
+    const std::array<mfb_key, 8> controls = {
+        KB_KEY_UP, KB_KEY_DOWN, KB_KEY_RIGHT, KB_KEY_LEFT,
+        KB_KEY_N, KB_KEY_O, KB_KEY_P, KB_KEY_R
+    };
+
+    bool changed = false;
+
+    for (unsigned i = 0; i < controls.size(); ++i) {
+        bool down = keys[controls[i]] != 0;
+
+        if (down && !previous[i]) {
+            switch (controls[i]) {
+                case KB_KEY_UP:
+                    settings.amplitude = std::min(
+                        settings.amplitude + 0.5f, 6.0f);
+                    break;
+                case KB_KEY_DOWN:
+                    settings.amplitude = std::max(
+                        settings.amplitude - 0.5f, 0.0f);
+                    break;
+                case KB_KEY_RIGHT:
+                    settings.frequency = std::min(
+                        settings.frequency + 0.05f, 0.5f);
+                    break;
+                case KB_KEY_LEFT:
+                    settings.frequency = std::max(
+                        settings.frequency - 0.05f, 0.05f);
+                    break;
+                case KB_KEY_N:
+                    ++settings.seed;
+                    break;
+                case KB_KEY_O:
+                    settings.octaves = std::min(
+                        settings.octaves + 1, 4u);
+                    break;
+                case KB_KEY_P:
+                    settings.octaves = std::max(
+                        settings.octaves - 1, 1u);
+                    break;
+                case KB_KEY_R:
+                    settings = TerrainSettings{};
+                    break;
+                default:
+                    break;
+            }
+            changed = true;
+        }
+
+        previous[i] = down;
+    }
+
+    return changed;
+}
+
+void printSettings(const TerrainSettings& settings) {
+    std::printf(
+        "Seed=%u | amplitude=%.2f | frequency=%.2f | octaves=%u\n",
+        static_cast<unsigned>(settings.seed),
+        settings.amplitude,
+        settings.frequency,
+        settings.octaves);
+}
+
 int main() {
     mfb_window* window = mfb_open("Terrain Lab", WIDTH, HEIGHT);
     if (!window) {
@@ -181,43 +253,30 @@ int main() {
     }
 
     Mesh mesh = createGrid(64, 0.25f);
+    TerrainSettings settings;
+    std::array<bool, 8> previousKeys{};
 
-    constexpr float amplitude = 3.0f;
-    constexpr float frequency = 0.3f;
-    constexpr std::uint32_t seed = 42;
+    std::vector<std::uint32_t> pixels(WIDTH * HEIGHT);
 
-    constexpr unsigned octaves = 4;
-    constexpr float persistence = 0.5f;
-    constexpr float lacunarity = 2.0f;
-
-    applyNoise(mesh, amplitude, frequency, seed,
-               octaves, persistence, lacunarity);
-
-    std::vector<std::uint32_t> pixels(
-        WIDTH * HEIGHT, MFB_RGB(25, 35, 50));
-
-    for (const auto& triangle : mesh.triangles) {
-        for (unsigned edge = 0; edge < 3; ++edge) {
-            ScreenPoint a = project(mesh.vertices[triangle[edge]]);
-            ScreenPoint b = project(
-                mesh.vertices[triangle[(edge + 1) % 3]]);
-            drawLine(pixels, a, b);
-        }
-    }
-
+    std::puts("UP/DOWN: height | RIGHT/LEFT: frequency");
+    std::puts("N: next seed | O/P: more/fewer octaves | R: reset");
     std::printf("Grid: %zu vertices, %zu triangles\n",
                 mesh.vertices.size(), mesh.triangles.size());
-    std::printf("Fractal noise: seed=%u, octaves=%u\n",
-                static_cast<unsigned>(seed), octaves);
-    std::printf("Amplitude=%.2f, frequency=%.2f\n",
-                amplitude, frequency);
-    std::printf("Persistence=%.2f, lacunarity=%.2f\n",
-                persistence, lacunarity);
+
+    applyNoise(mesh, settings);
+    renderMesh(mesh, pixels);
+    printSettings(settings);
 
     do {
         if (mfb_update_ex(window, pixels.data(), WIDTH, HEIGHT)
             != STATE_OK) {
             break;
+        }
+
+        if (handleInput(window, settings, previousKeys)) {
+            applyNoise(mesh, settings);
+            renderMesh(mesh, pixels);
+            printSettings(settings);
         }
     } while (mfb_wait_sync(window));
 
